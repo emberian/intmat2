@@ -1,0 +1,4 @@
+[deps]
+AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
+Intmat2 = "2a7f3c1e-6b9d-4e2a-9c51-0f3b8d7e5a21"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
