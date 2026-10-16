@@ -13,6 +13,20 @@
 @inline softplus(x::T) where {T} = x > T(20) ? x : log1p(exp(x))
 @inline sigmoid(x::T) where {T} = one(T) / (one(T) + exp(-x))
 
+# Math mode of the update kernel: Val(false) is the precise reference (bitwise equal to
+# the original four kernels); Val(true) uses the backends' fast tanh/exp/log, which on
+# Apple GPUs halves the step and moves the 64³×50-step gate by < 1e-6
+# (docs/performance.md). Default: precise on the CPU, fast on GPUs.
+@inline act_tanh(::Val{false}, x) = tanh(x)
+@inline act_tanh(::Val{true}, x) = Base.FastMath.tanh_fast(x)
+@inline softplus(::Val{false}, x) = softplus(x)
+@inline softplus(::Val{true}, x::T) where {T} =
+    x > T(20) ? x : Base.FastMath.log_fast(one(T) + Base.FastMath.exp_fast(x))
+@inline sigmoid(::Val{false}, x) = sigmoid(x)
+@inline sigmoid(::Val{true}, x::T) where {T} = one(T) / (one(T) + Base.FastMath.exp_fast(-x))
+
+fast_math_default(be) = !(be isa KA.CPU)
+
 # Indexing. Every kernel launches over a *linear* range and works in Int32 offsets:
 # KernelAbstractions' Cartesian `@index(Global, NTuple)` costs a 64-bit div/mod chain
 # per work-item, which on Apple GPUs cut a plain 256³ copy from ~300 to ~50 GB/s
@@ -96,7 +110,7 @@ end
 
 # The whole per-voxel step for voxel offset q with in-world coordinates (i, j, k).
 # θ[θo + 1 : θo + 2C²+8C] is the rule.
-@inline function update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, θo::Int32, ::Val{C}, p::Physics{T},
+@inline function update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, θo::Int32, ::Val{C}, fm::Val, p::Physics{T},
                                Nx::Int32, Ny::Int32, Nz::Int32, q::Int32,
                                i::Int32, j::Int32, k::Int32) where {C,T}
     o = Int32(1)
@@ -127,13 +141,13 @@ end
         inp = SVector{4,T}(nx, sx, wx, Lx)
         u = θmatvec(θ, θo, Val(C), hx) + θmatvec(θ, θo + CC, Val(C), m) +
             θmatvec(θ, θo + Int32(2) * CC, Val(C), inp) + θvec(θ, θo + Int32(2) * CC + Int32(4C), Val(C), T)
-        hn = hx + (p.dt / p.tau_h) .* (tanh.(u) - hx)
+        hn = hx + (p.dt / p.tau_h) .* (act_tanh.(fm, u) - hx)
         # transport
         nt = nx + p.dt * fn
         wt = wx + p.dt * fw
         # material, on the transported n, w and the new activity
-        adep = softplus(dot(θvec(θ, θo + Int32(2) * CC + Int32(5C), Val(C), T), hn))
-        aero = softplus(dot(θvec(θ, θo + Int32(2) * CC + Int32(6C), Val(C), T), hn))
+        adep = softplus(fm, dot(θvec(θ, θo + Int32(2) * CC + Int32(5C), Val(C), T), hn))
+        aero = softplus(fm, dot(θvec(θ, θo + Int32(2) * CC + Int32(6C), Val(C), T), hn))
         dep = min(p.k_dep * adep * nt * (one(T) - sx) * p.dt, nt, one(T) - sx)
         ero = min(p.k_ero * aero * sx * p.dt, sx)
         photo = min(p.k_photo * Lx * wt * p.dt, wt)
@@ -143,7 +157,7 @@ end
         s2[q + o] = sn
         n2[q + o] = nt - dep + photo
         w2[q + o] = wt + ero - photo
-        L[q + o] = p.alpha_s * sn + p.alpha_p * sigmoid(dot(θvec(θ, θo + Int32(2) * CC + Int32(7C), Val(C), T), hn))
+        L[q + o] = p.alpha_s * sn + p.alpha_p * sigmoid(fm, dot(θvec(θ, θo + Int32(2) * CC + Int32(7C), Val(C), T), hn))
     end
 end
 
@@ -164,11 +178,40 @@ end
     end
 end
 
-@kernel function update_kernel!(h2, s2, n2, w2, L, @Const(h), @Const(s), @Const(n), @Const(w),
-                                @Const(θ), ::Val{C}, p::Physics{T}, Nx::Int32, Ny::Int32, Nz::Int32) where {C,T}
+# The update over B ≥ 1 worlds of V = Nx·Ny·Nz voxels stacked along a trailing
+# dimension; θ holds B rules of P = 2C²+8C numbers back to back. Each workgroup first
+# copies the (at most two) rules its voxels use into threadgroup memory. The launch
+# range is padded to whole workgroups (`unsafe_indices`) so every lane reaches the
+# barrier; padded lanes do no work.
+@kernel unsafe_indices=true function update_kernel!(h2, s2, n2, w2, L, @Const(h), @Const(s), @Const(n),
+        @Const(w), @Const(θ), ::Val{C}, fm::Val, p::Physics{T}, Nx::Int32, Ny::Int32, Nz::Int32,
+        B::Int32) where {C,T}
+    lθ = @localmem T (2 * (2C * C + 8C),)
+    # (values are recomputed after the barrier: KA's CPU backend splits the body there)
+    P = Int32(2C * C + 8C)
     q = (@index(Global, Linear) - 1) % Int32
-    _, i, j, k = voxel_coords(q, Nx, Ny, Nz)
-    update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, Int32(0), Val(C), p, Nx, Ny, Nz, q, i, j, k)
+    li = (@index(Local, Linear) - 1) % Int32
+    V = Nx * Ny * Nz
+    gs = Int32(@groupsize()[1])
+    b0 = min((q - li) ÷ V, B - Int32(1))               # world of the group's first voxel
+    nθ = min((q - li + gs - Int32(1)) ÷ V, B - Int32(1)) > b0 ? Int32(2) * P : P
+    t = li
+    while t < nθ
+        hi = t >= P
+        bt = min(b0 + (hi ? Int32(1) : Int32(0)), B - Int32(1))
+        @inbounds lθ[t + Int32(1)] = θ[bt * P + (hi ? t - P : t) + Int32(1)]
+        t += gs
+    end
+    @synchronize
+    P = Int32(2C * C + 8C)
+    q = (@index(Global, Linear) - 1) % Int32
+    li = (@index(Local, Linear) - 1) % Int32
+    b0 = min((q - li) ÷ (Nx * Ny * Nz), B - Int32(1))
+    if q < Nx * Ny * Nz * B
+        b, i, j, k = voxel_coords(q, Nx, Ny, Nz)
+        update_voxel!(h2, s2, n2, w2, L, h, s, n, w, lθ, (b - b0) * P, Val(C), fm, p,
+                      Nx, Ny, Nz, q, i, j, k)
+    end
 end
 
 @kernel function light_kernel!(L, p::Physics{T}, Nx::Int32, Ny::Int32, Nz::Int32) where {T}
@@ -182,7 +225,7 @@ end
 end
 
 """Workgroup sizes of the update and light passes (see docs/performance.md)."""
-update_workgroup(be) = 256
+update_workgroup(be) = 32
 light_workgroup(be) = 64
 
 # One-entry cache of the device copy of the last rule stepped on each backend type, so
@@ -203,27 +246,40 @@ function device_theta(be, rule::Rule{C,T}) where {C,T}
     end
 end
 
+function launch_update!(be, h2, s2, n2, w2, L, h, s, n, w, θ, ::Val{C}, fm::Val, p,
+                        X::Int32, Y::Int32, Z::Int32, B::Int32) where {C}
+    wg = update_workgroup(be)
+    total = Int(X) * Int(Y) * Int(Z) * Int(B)
+    update_kernel!(be, wg)(h2, s2, n2, w2, L, h, s, n, w, θ, Val(C), fm, p, X, Y, Z, B;
+                           ndrange=cld(total, wg) * wg)
+end
+
 function check_int32(C, dims, B=1)
     C * prod(dims) * B < typemax(Int32) ||
         throw(ArgumentError("C·Nx·Ny·Nz·B = $(C*prod(dims)*B) exceeds Int32 offsets"))
 end
 
 """
-    step!(wd::World, rule::Rule, p::Physics) -> World
+    step!(wd::World, rule::Rule, p::Physics; fast=(backend is a GPU)) -> World
 
 Advance one `p.dt`. Returns the world with swapped buffers; the argument is
-stale afterwards. Synchronizes the backend.
+stale afterwards. Synchronizes the backend unless `sync=false` (launches queue in
+order, so consecutive unsynchronized steps are safe; a Metal sync costs ~1 ms, which
+dominates grids below ~128³). `fast=false` gives the precise math
+that is bitwise equal to the original four-kernel step; `fast=true` (the GPU default)
+uses fast tanh/exp/log.
 """
-function step!(wd::World{C,T}, rule::Rule{C,T}, p::Physics{T}) where {C,T}
+function step!(wd::World{C,T}, rule::Rule{C,T}, p::Physics{T};
+               fast::Bool=fast_math_default(backend(wd)), sync::Bool=true) where {C,T}
     be = backend(wd)
     Nx, Ny, Nz = size(wd)
     check_int32(C, (Nx, Ny, Nz))
     X, Y, Z = Int32(Nx), Int32(Ny), Int32(Nz)
     θ = device_theta(be, rule)
-    update_kernel!(be, update_workgroup(be))(wd.h2, wd.s2, wd.n2, wd.w2, wd.L, wd.h, wd.s, wd.n, wd.w,
-                                             θ, Val(C), p, X, Y, Z; ndrange=Nx * Ny * Nz)
+    launch_update!(be, wd.h2, wd.s2, wd.n2, wd.w2, wd.L, wd.h, wd.s, wd.n, wd.w, θ, Val(C),
+                   Val(fast), p, X, Y, Z, Int32(1))
     light_kernel!(be, light_workgroup(be))(wd.L, p, X, Y, Z; ndrange=Nx * Ny)
-    KA.synchronize(be)
+    sync && KA.synchronize(be)
     World{C,T,typeof(wd.h),typeof(wd.s)}(wd.h2, wd.s2, wd.n2, wd.w2, wd.L,
         wd.h, wd.s, wd.n, wd.w, wd.t + p.dt, wd.step + 1)
 end
@@ -239,10 +295,11 @@ function light!(wd::World{C,T}, rule::Rule{C,T}, p::Physics{T}) where {C,T}
     wd
 end
 
-"""Run `nsteps` steps. Returns the final world."""
-function run!(wd::World, rule::Rule, p::Physics, nsteps::Integer)
+"""Run `nsteps` steps, synchronizing once at the end. Returns the final world."""
+function run!(wd::World, rule::Rule, p::Physics, nsteps::Integer; kw...)
     for _ in 1:nsteps
-        wd = step!(wd, rule, p)
+        wd = step!(wd, rule, p; kw..., sync=false)
     end
+    KA.synchronize(backend(wd))
     wd
 end

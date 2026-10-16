@@ -6,7 +6,7 @@ else; using AMDGPU; be = ROCBackend(); end
 include(joinpath(@__DIR__, "common.jl"))
 r = gate_rule(); p = gate_physics()
 w = light!(gate_world(be, 64), r, p)
-w = run!(w, r, p, 50)
+w = run!(w, r, p, 50; fast=get(ARGS, 2, "fast") == "fast")
 c = KA.adapt(KA.CPU(), w)
 N = 64; C = 8
 ref = open(joinpath(@__DIR__, "ref-64-50.bin")) do io

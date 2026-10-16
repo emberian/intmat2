@@ -3,7 +3,7 @@
 # usage: julia --project=. bench/gate_cpu.jl
 using Intmat2, KernelAbstractions, Random, Printf
 module Old
-    using KernelAbstractions, StaticArrays, LinearAlgebra
+    using KernelAbstractions, Intmat2.StaticArrays, Intmat2.LinearAlgebra
     using Intmat2: Rule, Physics, World, backend
     const KA = KernelAbstractions
     include(joinpath(@__DIR__, "step_09d1bd7.jl"))
