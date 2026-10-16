@@ -81,17 +81,45 @@ end
 function jsonv(io, x::AbstractVector)
     print(io, '[')
     for (j, v) in enumerate(x)
-        j > 1 && print(io, ",\n")
+        j > 1 && print(io, eltype(x) <: AbstractVector ? ",\n" : ",")
         jsonv(io, v)
     end
     print(io, ']')
 end
 
-finite(x) = x isa Real && isfinite(x)
+# Points are stored as rows (one array per point, `COLUMNS` order), floats at 6
+# significant digits: 20000 points in a few MB.
+const COLUMNS = ["C", "seed", "self", "nb", "inp", "bias", "read",
+    "dt", "tau_h", "g0", "g1", "k_dep", "k_ero", "k_photo", "D0", "alpha_s", "alpha_p", "L0", "M",
+    "ss_s", "ss_n", "ss_w", "ss_L", "ss_converged", "ss_clamped",
+    "frozen_class", "frozen_lambda_max", "frozen_kappa_star", "frozen_wavelength", "frozen_imag_star",
+    "frozen_re0", "frozen_im0", "frozen_map_rate_max", "frozen_band_lo", "frozen_band_hi",
+    "local_class", "local_lambda_max", "local_kappa_star", "local_wavelength", "local_imag_star",
+    "local_re0", "local_im0", "local_map_rate_max", "local_band_lo", "local_band_hi"]
+sig(x::Real) = isfinite(x) ? round(Float64(x), sigdigits=6) : x
+sig(x) = x
+function row(r)
+    sc = r["rule_scales"]; ph = r["physics"]; st = r["steady"]
+    v = Any[r["C"], r["seed"], sc["self"], sc["nb"], sc["inp"], sc["bias"], sc["read"],
+        ph["dt"], ph["tau_h"], ph["g0"], ph["g1"], ph["k_dep"], ph["k_ero"], ph["k_photo"], ph["D0"],
+        ph["alpha_s"], ph["alpha_p"], ph["L0"], r["M"], st["s"], st["n"], st["w"], st["L"],
+        st["converged"], st["clamped"]]
+    for light in ("frozen", "local")
+        d = r[light]
+        push!(v, d["class"])
+        for k in ("lambda_max", "kappa_star", "wavelength", "imag_star", "re0", "im0", "map_rate_max", "band_lo", "band_hi")
+            push!(v, get(d, k, NaN))
+        end
+    end
+    map(sig, v)
+end
 
-function recipe(rec, light_used)
+function recipe(rec, light_used, name)
     d = rec[light_used]
-    Dict{String,Any}("C" => rec["C"], "seed" => rec["seed"], "rng" => "MersenneTwister",
+    rate = d["class"] in ("hopf", "homogeneous") ? d["re0"] : d["lambda_max"]
+    efolds_steps = ceil(Int, 5 / (rate * rec["physics"]["dt"]))   # five e-folds of the linear growth
+    Dict{String,Any}("name" => name, "C" => rec["C"], "seed" => rec["seed"], "rng" => "MersenneTwister",
+        "h_scale" => 0.1, "steps" => efolds_steps,
         "rule_eltype" => "Float64",
         "construct" => "random_rule(MersenneTwister(seed), C, Float64; rule_scales...)",
         "rule_scales" => rec["rule_scales"], "physics" => rec["physics"], "n0" => rec["M"],
@@ -156,7 +184,8 @@ function main()
             open(joinpath(ROOT, "recipes", name), "w") do io
                 println(io, "# From bin/atlas.jl (master seed $MASTER, $NPTS points). Linear prediction about the")
                 println(io, "# homogeneous steady state at the top layer; see docs/analysis.md.")
-                TOML.print(io, recipe(r, "frozen"); sorted=true)
+                println(io, "# `steps` is five e-folds of the predicted linear growth at this dt.")
+                TOML.print(io, recipe(r, "frozen", replace(name, ".toml" => "")); sorted=true)
             end
             push!(names, name)
             fr = r["frozen"]
@@ -171,7 +200,8 @@ function main()
         "kappa_grid" => "8 (j/96)^2, j = 1..96, golden-section refined at the max",
         "dt_rule" => "min(0.05, 1/(6 D0), tau_h); tau_h = 1, g0 = 0.5",
         "depth" => 1, "fractions" => summary, "clamped_fraction" => clamped / NPTS,
-        "frozen_local_agreement" => agree / NPTS, "recipes" => names, "points" => recs)
+        "frozen_local_agreement" => agree / NPTS, "recipes" => names,
+        "columns" => COLUMNS, "rows" => [row(r) for r in recs])
     path = joinpath(ROOT, "results", "atlas-$DATE.json")
     open(io -> jsonv(io, out), path, "w")
     @printf("wrote %s (%d points, %.1f s)\n", path, NPTS, elapsed)
