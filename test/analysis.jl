@@ -1,4 +1,6 @@
 using Intmat2, Test, Random, LinearAlgebra, Statistics, KernelAbstractions
+# Fixtures were characterized at the original absorption alpha_s=alpha_p=2.0; the
+# Physics defaults later dropped to 0.05/0.1, so every fixture sets them explicitly.
 using Intmat2.Analysis
 const AN = Intmat2.Analysis
 
@@ -6,11 +8,11 @@ const AN = Intmat2.Analysis
 # dt is raised within the stated bounds (6 D0 dt ≤ 1, dt ≤ tau_h) to keep runs short,
 # and every comparison is against the exact one-step map at that dt.
 const TYPEII = (C=4, seed=838841668, sc=(self=0.5, nb=0.8, inp=4.0, bias=0.5, read=2.0), M=0.5,
-                p=Physics{Float64}(k_dep=0.3, k_ero=0.01, k_photo=1.0, D0=1.0, g1=-0.5, dt=1/6))
+                p=Physics{Float64}(k_dep=0.3, k_ero=0.01, k_photo=1.0, D0=1.0, g1=-0.5, dt=1/6, alpha_s=2.0, alpha_p=2.0))
 const BAND = (C=4, seed=1184891871, sc=(self=2.0, nb=0.8, inp=2.0, bias=0.5, read=0.5), M=0.5,
-              p=Physics{Float64}(k_dep=0.1, k_ero=0.1/3, k_photo=0.05, D0=0.2, g1=0.0, dt=0.2))
+              p=Physics{Float64}(k_dep=0.1, k_ero=0.1/3, k_photo=0.05, D0=0.2, g1=0.0, dt=0.2, alpha_s=2.0, alpha_p=2.0))
 const STABLE = (C=4, seed=1443778830, sc=(self=1.5, nb=0.2, inp=1.0, bias=0.1, read=4.0), M=1.0,
-                p=Physics{Float64}(k_dep=3.0, k_ero=1.0, k_photo=1.0, D0=1.0, g1=0.5, dt=1/6))
+                p=Physics{Float64}(k_dep=3.0, k_ero=1.0, k_photo=1.0, D0=1.0, g1=0.5, dt=1/6, alpha_s=2.0, alpha_p=2.0))
 
 mkrule(c) = random_rule(MersenneTwister(c.seed), c.C, Float64; c.sc...)
 

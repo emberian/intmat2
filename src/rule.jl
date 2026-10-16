@@ -67,8 +67,15 @@ random_rule(C::Integer, T::Type=Float32; kw...) = random_rule(Random.default_rng
 """
     Physics{T}
 
-Timescales and material coefficients. Grid spacing is 1; `dt` must satisfy
-`6 D0 dt ≤ 1` for the explicit diffusion and `dt ≤ tau_h` for the activity.
+Timescales and material coefficients. Grid spacing is 1. `6 D0 dt ≤ 1` and
+`dt ≤ tau_h` are necessary, not sufficient: the explicit neighbour coupling and
+weakly damped oscillatory modes also bound `dt`. Use
+`Intmat2.Analysis.stable_dt(rule, p; M)` for the actual bound (docs/analysis.md).
+
+Absorption defaults are per cell and deliberately small: at `alpha_s = 0.05` a
+column of half-solid has an e-folding depth of 40 voxels, so a 128-deep slab is
+translucent. The layered analysis showed that `alpha_s = 2` turns everything below
+the top three layers into a dark waste store and removes the predicted patterns.
 """
 Base.@kwdef struct Physics{T}
     dt::T = 0.05
@@ -79,8 +86,8 @@ Base.@kwdef struct Physics{T}
     k_ero::T = 0.01     # erosion rate
     k_photo::T = 0.05   # light-driven waste → nutrient
     D0::T = 0.2         # diffusivity of n and w with no solid
-    alpha_s::T = 2.0    # light absorption per unit solid per cell
-    alpha_p::T = 2.0    # light absorption per unit pigment per cell
+    alpha_s::T = 0.05   # light absorption per unit solid per cell (translucent matter)
+    alpha_p::T = 0.1    # light absorption per unit pigment per cell
     L0::T = 1.0         # illumination at the top face
 end
 
