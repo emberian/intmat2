@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interior 2 — volume</title>
+<style>
+  :root { color-scheme: dark; --fg: #d8d4cc; --dim: #8a867f; --bg: #0b0b0c; --panel: #151517; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  #wrap { display: flex; height: 100%; flex-wrap: wrap; }
+  canvas { flex: 1 1 520px; min-width: 0; height: 100%; min-height: 60vh; display: block; cursor: grab; touch-action: none; }
+  #panel { flex: 0 0 280px; padding: 14px 16px; background: var(--panel); overflow-y: auto; box-sizing: border-box; }
+  h1 { font-size: 14px; margin: 0 0 4px; font-weight: 600; }
+  a { color: var(--fg); }
+  label { display: block; margin: 10px 0 2px; color: var(--dim); }
+  input[type=range], select { width: 100%; }
+  .row { display: flex; gap: 6px; }
+  .row > * { flex: 1; }
+  #stats { white-space: pre; color: var(--dim); font-size: 12px; margin-top: 12px; }
+  #err { color: #e38a6a; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="gl"></canvas>
+  <div id="panel">
+    <h1 id="title">Interior 2</h1>
+    <div><a href="../../index.html">collection</a></div>
+    <label>mode</label>
+    <select id="mode">
+      <option value="lit">as lit (simulation light L)</option>
+      <option value="s">diagnostic: solid s</option>
+      <option value="pig">diagnostic: pigment</option>
+      <option value="n">diagnostic: nutrient n</option>
+      <option value="w">diagnostic: waste w</option>
+      <option value="L">diagnostic: light L</option>
+    </select>
+    <label>time <span id="tlabel"></span></label>
+    <input id="time" type="range" min="0" max="0" value="0" step="1">
+    <label>clip axis</label>
+    <select id="clipaxis">
+      <option value="-1">none</option><option value="0">x</option><option value="1">y</option><option value="2" selected>z (depth)</option>
+    </select>
+    <label>clip position <span id="clabel"></span></label>
+    <input id="clip" type="range" min="0" max="1" value="1" step="0.005">
+    <label>density (camera path; 1 = what the material sees)</label>
+    <input id="density" type="range" min="-3" max="1" value="0" step="0.05">
+    <label>exposure</label>
+    <input id="exposure" type="range" min="-3" max="4" value="0.5" step="0.05">
+    <div id="stats"></div>
+    <div id="err"></div>
+  </div>
+</div>
+<script src="volume.js"></script>
+</body>
+</html>
