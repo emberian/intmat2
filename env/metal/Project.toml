@@ -1,0 +1,4 @@
+[deps]
+Intmat2 = "2a7f3c1e-6b9d-4e2a-9c51-0f3b8d7e5a21"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+Metal = "dde4c033-4e86-420c-a63e-0dd931031962"
