@@ -23,5 +23,10 @@ include("rule.jl")
 include("state.jl")
 include("step.jl")
 include("observe.jl")
+include("analysis.jl")   # steady state, dispersion, atlas
+include("export.jl")     # captures and manifests
+include("render.jl")     # GPU ray marcher using the in-sim light
+include("batch.jl")      # independent-world batching
+include("evolve.jl")     # objectives and rule search
 
 end # module

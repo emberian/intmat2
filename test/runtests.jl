@@ -66,3 +66,8 @@ end
     ts = timescales(p)
     @test ts.tau_dep ≈ 10 && ts.ero_over_dep ≈ 10
 end
+
+for extra in ("analysis.jl", "export.jl", "render.jl", "batch.jl", "evolve.jl")
+    f = joinpath(@__DIR__, extra)
+    isfile(f) && include(f)
+end

@@ -1,0 +1,4 @@
+{"command": "julia --project=env/metal scratch/metal_smoke.jl", "commit": "ec3d613", "backend": "Metal (Apple M2 Max)", "dtype": "Float32", "C": 8,
+ "parity_vs_cpu_32cubed_20steps": {"max_abs_ds": 1.49e-8, "max_abs_dh": 1.79e-7, "mass_ratio": 1.0},
+ "steps_per_s": {"64": 386.5, "128": 214.4, "256": 37.2}, "gvoxel_steps_per_s": {"64": 0.101, "128": 0.45, "256": 0.624},
+ "cpu_1thread_64_steps_per_s": 7.08, "note": "4 kernels/step incl. N^2-thread light march; no fusion yet"}
