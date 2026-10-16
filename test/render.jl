@@ -25,6 +25,9 @@ using Intmat2: Optics, Camera, Clip, camera, render, render_world, write_png
     # a cut plane removes the lit top; the exposed interior is unlit
     img2 = render_world(w, r, side, Optics(p; background=(0, 0, 0)); width=32, height=32, clip=Clip(normal=(0, 0, 1), offset=N / 2))
     @test maximum(img2[:, 8:24, 3]) == 0 && maximum(img2[:, 8:24, 18]) < 0.02
+    # prefilter removes single-cell alternation exactly in the interior
+    cb = Float32[isodd(i + j + k) for i in 1:8, j in 1:8, k in 1:8]
+    @test all(Intmat2.binomial3(cb)[2:7, 2:7, 2:7] .≈ 0.5f0)
     f = tempname() * ".png"
     write_png(f, img)
     @test read(f)[2:4] == UInt8['P', 'N', 'G'] && filesize(f) > 3 * 32 * 32

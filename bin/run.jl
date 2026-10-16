@@ -3,7 +3,8 @@
 #
 # Recipe fields (TOML): name, C, seed, backend = "cpu"|"metal", N or dims = [Nx,Ny,Nz],
 # steps, capture_every, n0, h_scale, s0, [rule_scales] {self,nb,inp,bias,read} (or an
-# explicit `theta` vector of 2C²+8C numbers), and every Physics field either at top
+# explicit `theta` vector of 2C²+8C numbers; `rule_scales.nb_diag` adds that multiple of
+# the identity to W_nb), and every Physics field either at top
 # level or under [physics]. Optional `fields` (default s,n,w,L,pig) and `h_final = true`
 # to also save h in the last capture. `rule_eltype = "Float64"` draws the random rule in
 # Float64 (as bin/atlas.jl does) before converting. Missing run fields default to
@@ -29,9 +30,14 @@ function load_recipe(path, overrides=Pair{String,Any}[])
     rule = if haskey(r, "theta")
         Rule{C,Float32}(Float32.(r["theta"]))
     else
-        sc = get(r, "rule_scales", Dict())
+        sc = Dict(get(r, "rule_scales", Dict()))
+        diag = Float64(pop!(sc, "nb_diag", 0.0))
         TR = get(r, "rule_eltype", "Float32") == "Float64" ? Float64 : Float32
-        convert(Rule{C,Float32}, random_rule(MersenneTwister(seed), C, TR; (Symbol(k) => Float64(v) for (k, v) in sc)...))
+        θ = collect(vec(random_rule(MersenneTwister(seed), C, TR; (Symbol(k) => Float64(v) for (k, v) in sc)...)))
+        for c in 1:C            # nb_diag: W_nb += nb_diag·I, plain diffusion of activity
+            θ[C * C + (c - 1) * C + c] += diag
+        end
+        Rule{C,Float32}(Float32.(θ))
     end
     dims = haskey(r, "dims") ? Tuple(Int.(r["dims"])) : (N = r["N"]; (N, N, N))
     (; raw=r, p, rule, C, seed, dims)

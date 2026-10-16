@@ -6,13 +6,16 @@
 #   scattering  β_c(x) = density·(α_s·s·solid_c + α_p·p̃·pigment_c)
 #   in-scatter  β_c(x)·(L(x) + ambient)      L trilinear from the simulation
 # with p̃ = max(pig − pig_floor, 0)/(1 − pig_floor). Radiance is integrated front to
-# back with exact per-segment attenuation, then exposure, a soft shoulder, and gamma.
+# back with exact per-segment attenuation, then exposure, a shoulder v/(1+shoulder·v),
+# and gamma. `prefilter=true` blurs s and pig with a 3³ binomial kernel first: it
+# removes single-cell (checkerboard) alternation the camera cannot resolve, which
+# otherwise aliases into moiré.
 
 export Optics, Camera, Clip, camera, render, render_world, write_png
 
 """
     Optics(; alpha_s, alpha_p, density, solid, pigment, pigment_absorb, pig_floor,
-             background, ambient, exposure, step, gamma)
+             background, ambient, exposure, shoulder, step, gamma)
 
 Optical parameters of a photograph. `alpha_s`/`alpha_p` should be the run's Physics
 values (`Optics(p::Physics; kw...)` copies them); `density` scales the camera-path
@@ -29,15 +32,16 @@ struct Optics
     background::SVector{3,Float32}
     ambient::Float32
     exposure::Float32
+    shoulder::Float32
     step::Float32
     gamma::Float32
 end
 function Optics(; alpha_s=2.0, alpha_p=2.0, density=1.0, solid=(0.90, 0.89, 0.86),
                 pigment=(0.95, 0.42, 0.16), pigment_absorb=(0.35, 1.0, 1.4), pig_floor=0.0,
-                background=(0.012, 0.012, 0.014), ambient=0.0, exposure=1.0, step=0.5, gamma=2.2)
+                background=(0.012, 0.012, 0.014), ambient=0.0, exposure=1.0, shoulder=0.25, step=0.5, gamma=2.2)
     v3(x) = SVector{3,Float32}(x...)
     Optics(alpha_s, alpha_p, density, v3(solid), v3(pigment), v3(pigment_absorb), pig_floor,
-           v3(background), ambient, exposure, step, gamma)
+           v3(background), ambient, exposure, shoulder, step, gamma)
 end
 Optics(p::Physics; kw...) = Optics(; alpha_s=Float64(p.alpha_s), alpha_p=Float64(p.alpha_p), kw...)
 
@@ -160,7 +164,7 @@ end
         end
         for c in 1:3
             v = opt.exposure * acc[c]
-            v = v / (one(T) + T(0.25) * v)      # soft shoulder, linear near 0
+            v = v / (one(T) + opt.shoulder * v)      # soft shoulder, linear near 0
             v = v + tr[c] * opt.background[c]
             img[c, px, py] = clamp(v, zero(T), one(T))^(one(T) / opt.gamma)
         end
@@ -175,14 +179,41 @@ backend. Returns a host `Array{Float32,3}` of size `(3, width, height)` in [0,1]
 (row 1 is the top of the image).
 """
 function render(s::AbstractArray{Float32,3}, pig::AbstractArray{Float32,3}, L::AbstractArray{Float32,3},
-                cam::Camera, opt::Optics; width::Integer=800, height::Integer=width, clip::Clip=Clip())
+                cam::Camera, opt::Optics; width::Integer=800, height::Integer=width, clip::Clip=Clip(),
+                prefilter::Bool=false)
     be = KA.get_backend(s)
+    if prefilter
+        s = binomial3(s); pig = binomial3(pig)
+    end
     img = KA.allocate(be, Float32, 3, width, height)
     Nx, Ny, Nz = size(s)
     march_kernel!(be, (16, 16))(img, s, pig, L, cam, opt, clip, Int32(width), Int32(height),
                                 Int32(Nx), Int32(Ny), Int32(Nz); ndrange=(width, height))
     KA.synchronize(be)
     Array(img)
+end
+
+@kernel function binomial3_kernel!(out, @Const(a), Nx, Ny, Nz)
+    i, j, k = @index(Global, NTuple)
+    T = eltype(out)
+    acc = zero(T); wsum = zero(T)
+    @inbounds for dk in -1:1, dj in -1:1, di in -1:1
+        ii = i + di; jj = j + dj; kk = k + dk
+        if 1 <= ii <= Nx && 1 <= jj <= Ny && 1 <= kk <= Nz
+            w = T((2 - abs(di)) * (2 - abs(dj)) * (2 - abs(dk)))
+            acc += w * a[ii, jj, kk]; wsum += w
+        end
+    end
+    @inbounds out[i, j, k] = acc / wsum
+end
+
+"""3³ binomial ([1,2,1]⊗³) blur, renormalized at the block faces."""
+function binomial3(a::AbstractArray{T,3}) where {T}
+    be = KA.get_backend(a)
+    out = similar(a)
+    binomial3_kernel!(be)(out, a, size(a)...; ndrange=size(a))
+    KA.synchronize(be)
+    out
 end
 
 @kernel function pig_kernel!(pig, @Const(h), rule::Rule{C,T}) where {C,T}
@@ -260,4 +291,30 @@ function write_png(path::AbstractString, img::AbstractArray{<:Real,3})
         png_chunk(io, "IEND", UInt8[])
     end
     path
+end
+
+"""
+    photo_setup(o::AbstractDict, dims, p::Physics) -> (; opt, cam, clip, width, height)
+
+Interpret a parsed optics.toml (see bin/photograph.jl): `[optics]` Optics fields
+(`alpha_s`/`alpha_p` default to `p`), `[camera]` pos/target as fractions of `dims`,
+`up`, `fov`, `ortho`, `half_height` (fraction of Nz), `[clip]` lo/hi (fractions),
+`normal`, `offset` (fraction of the extent along `normal`).
+"""
+function photo_setup(o::AbstractDict, dims, p::Physics)
+    D = Float64.(collect(dims))
+    tup(v) = v isa AbstractVector ? Tuple(Float64.(v)) : Float64(v)
+    opt = Optics(p; (Symbol(k) => tup(v) for (k, v) in get(o, "optics", Dict()))...)
+    c = get(o, "camera", Dict())
+    pos = Tuple(Float64.(get(c, "pos", [0.5, -1.2, 1.6])) .* D)
+    tgt = Tuple(Float64.(get(c, "target", [0.5, 0.5, 0.45])) .* D)
+    hh = haskey(c, "half_height") ? c["half_height"] * D[3] : nothing
+    cam = camera(pos, tgt; up=Tuple(get(c, "up", [0, 0, 1])), fov=get(c, "fov", 35),
+                 ortho=get(c, "ortho", false), half_height=hh)
+    k = get(o, "clip", Dict())
+    nrm = Float64.(get(k, "normal", [0, 0, 0]))
+    clip = Clip(; lo=Tuple(Float64.(get(k, "lo", [0, 0, 0])) .* D), hi=Tuple(Float64.(get(k, "hi", [1, 1, 1])) .* D),
+                normal=Tuple(nrm), offset=get(k, "offset", 0.0) * sum(abs.(nrm) .* D))
+    w = get(o, "width", 1600)
+    (; opt, cam, clip, width=w, height=get(o, "height", w), prefilter=get(o, "prefilter", false))
 end
