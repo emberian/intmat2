@@ -13,8 +13,9 @@ const AN = Intmat2.Analysis
 
 BLAS.set_num_threads(1)
 
-const NPTS = length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 20000
-const MASTER = length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 20261016
+const IS_MAIN = abspath(PROGRAM_FILE) == @__FILE__
+const NPTS = IS_MAIN && length(ARGS) >= 1 ? parse(Int, ARGS[1]) : 20000
+const MASTER = IS_MAIN && length(ARGS) >= 2 ? parse(Int, ARGS[2]) : 20261016
 const DATE = Libc.strftime("%Y%m%d", time())
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 
@@ -207,4 +208,4 @@ function main()
     @printf("wrote %s (%d points, %.1f s)\n", path, NPTS, elapsed)
 end
 
-main()
+IS_MAIN && main()

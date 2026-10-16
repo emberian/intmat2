@@ -14,9 +14,10 @@ module Analysis
 using LinearAlgebra
 using Random
 using KernelAbstractions
-using ..Intmat2: Rule, Physics, World, step!, light!, run!, softplus, sigmoid, conductance, mobility
+using ..Intmat2: Rule, Physics, nchannels, World, step!, light!, run!, softplus, sigmoid, conductance, mobility
 
-export steady_state, jacobian, stepmap, dispersion, classify, kappa, axis_wavelength
+export steady_state, jacobian, stepmap, dispersion, classify, kappa, axis_wavelength, stable_dt,
+       turing_prone_rule, layered_steady_state
 
 f64(x::AbstractArray) = Float64.(Array(x))
 
@@ -56,7 +57,9 @@ function material_of_h(rule, p, h, M, depth, Lfix)
     e = p.k_ero * softplus(dot(vero, h))
     pig = sigmoid(dot(vpig, h))
     c = depthfactor(depth)
-    Lfun = Lfix === nothing ? (s -> lightat(p, c, s, pig)) : (s -> Float64(Lfix))
+    Lfun = Lfix === nothing ? (s -> lightat(p, c, s, pig)) :
+           Lfix isa Tuple ? (s -> p.L0 * exp(-(Lfix[2] + (p.alpha_s * s + p.alpha_p * pig) / 2))) :
+           (s -> Float64(Lfix))
     material_balance(p, a, e, M, Lfun)
 end
 
@@ -73,7 +76,9 @@ end
 
 Spatially uniform fixed point `(h*, n*, s*, w*, L*)` at mass per voxel `M = n+s+w`.
 Light is self-consistent at layer `depth` of a uniform slab,
-`L* = L0 exp(−(depth−½)(α_s s* + α_p σ(v_pig·h*)))`, unless `L` fixes it.
+`L* = L0 exp(−(depth−½)(α_s s* + α_p σ(v_pig·h*)))`, unless `L` fixes it, or
+`tau_above = τ` places the layer under optical depth `τ`: `L* = L0 exp(−(τ + a*/2))`
+(and `light=:local` then perturbs only the layer's own absorbance).
 Activity: damped Newton (finite-difference Jacobian, backtracking) on
 `G(h) = tanh(W_self h + W_in [n,s,w,L](h) + b) − h` from `h0` (default 0), with the
 material solved exactly for each `h`. Several fixed points may exist; this returns
@@ -84,9 +89,13 @@ If Newton stalls, it alternates relaxation `h ← h + 0.2 G` with Newton restart
 converged, iters, residual, clamped, method` (`clamped` is true when a `min` in `material_kernel!` would bind at
 `p.dt`, i.e. the discrete stepper's fixed point differs from this one).
 """
-function steady_state(rule::Rule{C}, p::Physics; M=1.0, depth=1, L=nothing,
+function steady_state(rule::Rule{C}, p::Physics; M=1.0, depth=1, L=nothing, tau_above=nothing,
                       h0=zeros(C), tol=1e-13, maxiter=200) where {C}
     p = Physics{Float64}(p)
+    lightc = depthfactor(depth)
+    if tau_above !== nothing
+        L = (:above, Float64(tau_above)); lightc = 0.5
+    end
     r = newton_h(rule, p, Float64.(h0), M, depth, L, tol, maxiter)
     method = :newton
     if !r.converged
@@ -108,6 +117,12 @@ function steady_state(rule::Rule{C}, p::Physics; M=1.0, depth=1, L=nothing,
         method = :relax_newton
     end
     h, x, nG, iters, converged = r.h, r.x, r.nG, r.iters, r.converged
+    # degenerate saturation (s → 1 to machine precision, or h pinned at ±1) is not
+    # a usable linearization point
+    if x !== nothing && (!all(isfinite, (x.n, x.s, x.w, x.L)) || 1 - x.s < 1e-9 ||
+                         any(>=(1 - 1e-10), abs.(h)))
+        converged = false
+    end
     clamped = false
     if x !== nothing
         Ad = softplus(dot(f64(rule.vdep), h)); Ae = softplus(dot(f64(rule.vero), h))
@@ -117,9 +132,12 @@ function steady_state(rule::Rule{C}, p::Physics; M=1.0, depth=1, L=nothing,
         clamped = dep >= min(x.n, 1 - x.s) || ero >= x.s || photo >= x.w
     end
     x === nothing && return (h=h, n=NaN, s=NaN, w=NaN, L=NaN, M=Float64(M), depth=depth,
-                             converged=false, iters=iters, residual=nG, clamped=false, method=method)
+                             converged=false, iters=iters, residual=nG, clamped=false, method=method,
+                             lightc=lightc, absorbance=NaN)
+    a = p.alpha_s * x.s + p.alpha_p * sigmoid(dot(f64(rule.vpig), h))
     (h=h, n=x.n, s=x.s, w=x.w, L=x.L, M=Float64(M), depth=depth,
-     converged=converged, iters=iters, residual=nG, clamped=clamped, method=method)
+     converged=converged, iters=iters, residual=nG, clamped=clamped, method=method,
+     lightc=lightc, absorbance=a)
 end
 
 function newton_h(rule::Rule{C}, p, h, M, depth, L, tol, maxiter) where {C}
@@ -173,7 +191,7 @@ function linear_parts(rule::Rule{C}, p, ss, light::Symbol) where {C}
     # coherently with it (exact for Nz = 1 and for k_z = 0 modes at the top layer).
     Λ = zeros(N)
     if light === :local
-        c = depthfactor(ss.depth)
+        c = hasproperty(ss, :lightc) ? ss.lightc : depthfactor(ss.depth)
         Λ[1:C] .= -L * c * p.alpha_p * pig * (1 - pig) .* vpig
         Λ[C+2] = -L * c * p.alpha_s
     elseif light !== :frozen
@@ -385,6 +403,125 @@ function classify(d; tol=1e-9)
     else
         osc(d.im0) ? :hopf : :homogeneous
     end
+end
+
+"""
+    layered_steady_state(rule, p, Nz; M=1.0) -> Vector (index 1 = top layer)
+
+Per-layer steady states of a laterally uniform slab, marched down from the lit
+face: layer `j` sits under the exact optical depth `τ_j = Σ_{i<j} a_i*` of the
+layers above (`a* = α_s s* + α_p σ(v_pig·h*)`), each at mass `M`. Vertical
+coupling of `h` and vertical transport of `n, w` between layers are neglected
+(each layer is in local balance); `relax_column` gives the coupled column.
+Each layer is solved from `h0` = the layer above's `h*` (top: 0).
+"""
+function layered_steady_state(rule::Rule{C}, p::Physics, Nz::Integer; M=1.0) where {C}
+    out = []
+    τ = 0.0
+    h0 = zeros(C)
+    for j in 1:Nz
+        ss = steady_state(rule, p; M, tau_above=τ, h0=h0)
+        push!(out, merge(ss, (layer=j, tau_above=τ)))
+        ss.converged || break
+        τ += ss.absorbance
+        h0 = ss.h
+    end
+    out
+end
+
+"""
+    relax_column(rule, p, layers; steps) -> World
+
+Run the real `step!` on a `1×1×Nz` column (periodic x, y of size 1, so only the
+vertical coupling and transport act), initialized from `layered_steady_state`
+(top layer at `k = Nz`), for `steps` steps. Returns the final world.
+"""
+function relax_column(rule::Rule{C}, p::Physics, layers; steps::Integer) where {C}
+    Nz = length(layers)
+    wd = World(KernelAbstractions.CPU(), rule, (1, 1, Nz); T=Float64, h_scale=0.0)
+    for (j, ss) in enumerate(layers)
+        k = Nz - j + 1
+        wd.h[:, 1, 1, k] .= ss.h
+        wd.s[1, 1, k] = ss.s; wd.n[1, 1, k] = ss.n; wd.w[1, 1, k] = ss.w
+    end
+    wd = light!(wd, rule, Physics{Float64}(p))
+    run!(wd, rule, Physics{Float64}(p), steps)
+end
+
+# ------------------------------------------------------------------ Turing-prone rules
+
+"""
+    turing_prone_rule(rng, C, T=Float32; self=1.0, nb=0.4, inp=2.0, light_in=0.25,
+                      bias=0.5, read=3.0, align=true)
+
+A random rule drawn from the region the atlas fit (`bin/prone.jl`,
+`results/atlas-20261016-prone.json`) associates with Turing-type instability:
+- `W_nb = nb·Q Qᵀ/C` is positive semidefinite, so `−g κ W_nb` damps every channel:
+  no grid-scale anti-diffusion (the main gridscale predictor);
+- strong material inputs (`inp`) but a weak light column (`light_in·inp`);
+- strong read-outs (`read`), and with `align` the deposition read-out is aligned and
+  the erosion read-out anti-aligned with a reference activity
+  `h_ref = tanh(W_in [0.5, 0.3, 0.1, 0.3] + b)`, so that at a nearby steady state
+  deposition is on and erosion is off (`v_dep·h* > 0`, `v_ero·h* < 0`, high `s*`).
+Low mass per voxel (`M ≈ 0.5`) is the strongest physics-side predictor; it is not
+part of the rule.
+"""
+function turing_prone_rule(rng::AbstractRNG, C::Integer, ::Type{T}=Float32; self=1.0, nb=0.4, inp=2.0,
+                           light_in=0.25, bias=0.5, read=3.0, align=true) where {T}
+    sc = 1 / sqrt(C)
+    Wself = randn(rng, C, C) .* (self * sc)
+    Q = randn(rng, C, C)
+    Wnb = nb .* (Q * Q') ./ C
+    Win = randn(rng, C, 4) .* inp
+    Win[:, 4] .*= light_in
+    b = randn(rng, C) .* bias
+    vdep = randn(rng, C) .* read; vero = randn(rng, C) .* read; vpig = randn(rng, C) .* read
+    if align
+        href = tanh.(Win * [0.5, 0.3, 0.1, 0.3] .+ b)
+        vdep = abs.(vdep) .* sign.(href)
+        vero = -abs.(vero) .* sign.(href)
+    end
+    Rule{C,T}(T.(vcat(vec(Wself), vec(Wnb), vec(Win), b, vdep, vero, vpig)))
+end
+
+# ------------------------------------------------------------------ time step bound
+
+withdt(p::Physics{T}, dt) where {T} =
+    Physics{T}(; (f => (f === :dt ? T(dt) : getfield(p, f)) for f in fieldnames(Physics))...)
+
+"""
+    stable_dt(rule, p; M=1.0, depth=1, light=:local, κmax=12, nκ=241) -> T
+
+Largest `dt ≤ min(τ_h, 1/(6 D0))` for which the exact one-step map about the
+homogeneous steady state does not grow faster than the continuous system, at every
+`κ ∈ [0, κmax]` (12 = the 3D maximum):
+`log|μ_max(κ)|/dt ≤ 1.5 max(Re λ(κ), 0) + atol`, `atol = 1e-3/τ_h` by default.
+For a linearly stable steady state this is spectral radius ≤ e^{atol·dt} ≈ 1 at every
+κ; for an unstable one (Turing, Hopf) it admits the physical growth and rejects
+numerical growth. `atol` absorbs the O(dt) shift of marginal modes at band edges
+(e.g. Re λ = 8e-6 → map rate 2e-4 at dt 0.2); growth slower than `atol` is not
+resolved by this bound. Bisection over `dt` (40 halvings); returns 0 if even `dt_max/1000` fails.
+"""
+function stable_dt(rule::Rule, p::Physics{T}; M=1.0, depth=1, ss=nothing, light::Symbol=:local,
+                   κmax=12.0, nκ=241, atol=1e-3 / p.tau_h) where {T}
+    p64 = Physics{Float64}(p)
+    ss === nothing && (ss = steady_state(rule, p64; M, depth))
+    dmax = p64.D0 > 0 ? min(p64.tau_h, 1 / (6 * p64.D0)) : p64.tau_h
+    κs = range(0, κmax, length=nκ)
+    Pc = Pencil(rule, p64, ss; light)
+    allowed = [max(real(dominant(Pc, κ)), 0.0) for κ in κs]
+    function ok(dt)
+        P = Pencil(rule, withdt(p64, dt), ss; light)
+        all(map_rate(P, κ) <= 1.5 * a + atol for (κ, a) in zip(κs, allowed))
+    end
+    ok(dmax) && return T(dmax)
+    lo, hi = dmax / 1000, dmax
+    ok(lo) || return zero(T)
+    for _ in 1:40
+        mid = (lo + hi) / 2
+        ok(mid) ? (lo = mid) : (hi = mid)
+    end
+    T(lo)
 end
 
 # ------------------------------------------------------------------ validation helpers

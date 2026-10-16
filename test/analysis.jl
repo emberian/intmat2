@@ -126,3 +126,36 @@ end
     @test classify(merge(base, (re0=0.02, lambda_max=0.2))) == :mixed
     @test axis_wavelength(2.0) ≈ 4 && axis_wavelength(4.0) ≈ 2
 end
+
+@testset "analysis: stable_dt" begin
+    c = BAND
+    r = mkrule(c)
+    p = AN.withdt(c.p, 0.5)          # satisfies 6 D0 dt ≤ 1 and dt ≤ tau_h, yet unstable
+    dt = stable_dt(r, p; M=c.M)
+    @test 0 < dt < 0.5
+    @test dt <= min(p.tau_h, 1 / (6p.D0))
+    run200(dt) = (pp = AN.withdt(p, dt); ss = steady_state(r, pp; M=c.M);
+                  m = AN.measure_mode_rates(r, pp, ss; N=16, t1=dt * 100, t2=dt * 200); m.norms)
+    n_bad = run200(0.5)
+    @test n_bad[end] > 1e3 * n_bad[1]        # the stepper blows up at the rejected dt
+    n_ok = run200(dt)
+    @test all(isfinite, n_ok) && n_ok[end] < 10 * n_ok[1]   # physical Turing growth only
+end
+
+@testset "analysis: layered steady state" begin
+    r = mkrule(TYPEII)
+    layers = layered_steady_state(r, TYPEII.p, 6; M=TYPEII.M)
+    top = steady_state(r, TYPEII.p; M=TYPEII.M, depth=1)
+    @test layers[1].s ≈ top.s && layers[1].L ≈ top.L
+    @test all(l -> l.converged, layers)
+    @test issorted([l.tau_above for l in layers]) && issorted([l.L for l in layers], rev=true)
+    col = AN.relax_column(r, TYPEII.p, layers; steps=10)
+    @test sum(col.s) + sum(col.n) + sum(col.w) ≈ 6 * TYPEII.M
+end
+
+@testset "analysis: turing_prone_rule" begin
+    r = turing_prone_rule(MersenneTwister(3), 8, Float64)
+    @test r == turing_prone_rule(MersenneTwister(3), 8, Float64)
+    @test minimum(eigvals(Symmetric(Matrix(r.Wnb)))) >= -1e-12   # no anti-diffusion
+    @test turing_prone_rule(MersenneTwister(3), 8) isa Rule{8,Float32}
+end

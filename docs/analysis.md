@@ -141,3 +141,79 @@ the other model's class in `other_light_model_class`):
 All recipes use α_s = α_p = 2, so only the top few layers of a deep slab are lit.
 In a thick slab the prediction applies to the top layer; rerun `steady_state` /
 `dispersion` with the recipe's `depth` or optics before trusting it deeper.
+
+## Time-step bound: `stable_dt`
+
+The Physics bounds (`6 D0 dt ≤ 1`, `dt ≤ τ_h`) are necessary, not sufficient.
+`stable_dt(rule, p; M)` bisects for the largest `dt ≤ min(τ_h, 1/(6 D0))` at which
+the exact one-step map grows no faster than the continuous system at every
+`κ ∈ [0, 12]` (12 = 3D grid scale): `log|μ_max|/dt ≤ 1.5 max(Re λ, 0) + 10⁻³/τ_h`.
+For a stable steady state that is spectral radius ≤ 1; for Turing/Hopf it admits
+the physical growth only. Two mechanisms set it below the Physics bounds:
+
+- explicit Euler on the activity coupling at large κ: rule seed 1184891871 (C=4,
+  D0 0.2) has `stable_dt = 0.266`; at dt 0.5 (both Physics bounds hold) the
+  checkerboard grows at 1.30 per unit time and a 16² run goes from 4e-5 to 13 in
+  200 steps; at dt 0.266 it reaches 1.4e-4 (Turing growth only). Tested.
+- weakly damped oscillatory modes: `|1 + dt λ| ≤ 1` needs `dt ≤ 2|Re λ|/|λ|²`.
+  Recipe turing-10 has a mode `−0.0041 − 1.03i` at κ ≈ 10.6 (3D only), so
+  `stable_dt = 0.0024`; at dt 0.05 that mode grows at +0.0023 in the stepper while
+  the continuous system decays. osc-02 (Hopf, `0.0063 − 0.93i`) grows 4× too fast
+  at dt 0.05 (map 0.0255); `stable_dt = 0.0046`.
+
+Recipes at dt 0.05: turing-01…09 and osc-01, 04, 05 pass (`stable_dt` 0.10–1.0);
+turing-10, osc-02, osc-03 (0.021) do not. The honest bound for any run is
+`stable_dt(rule, p; M)`, not the Physics docstring.
+
+## What predicts the class
+
+`julia -t 8 --project=. bin/prone.jl 2000` → `results/atlas-20261016-prone.json`.
+One-vs-rest L2 logistic regression on standardized features over the 19 458
+converged atlas points (frozen light). Since this commit `steady_state` also
+rejects degenerate saturation (`1 − s* < 1e-9` or `|h*| ≈ 1`), which moves ~3% of
+random-rule points to `no_steady_state`. Largest coefficients:
+
+| class (base rate, AUC) | coefficients |
+|---|---|
+| gridscale (0.149, 0.935) | nb anti-diffusion +1.92, ρ(W_self) −0.55, nb +0.36, C +0.26, M −0.24 |
+| stable (0.777, 0.893) | nb anti-diffusion −2.36, ρ(W_self) −0.45, M +0.39, read −0.27, s* −0.22 |
+| turing (0.0062, 0.883) | M −2.46, s* +1.07, ‖W_in L-col‖ −0.60, inp +0.58, read +0.56, log τ_photo/τ_dep +0.53, nb anti-diffusion −0.48 |
+
+"nb anti-diffusion" is `8 g* max(0, −min Re eig(S W_nb))`, the κ = 8 growth the
+coupling can supply; the stump `≥ 2.1` is 87% gridscale. Turing wants low mass
+(`M < 1`: 1.36%), strong read-outs (`read ≥ 4`: 1.29%), erosion off at the steady
+state (`v_ero·h* < −6.8`: 3.1%), deposition on (`v_dep·h* ≥ 9.9`: 2.1%), and high
+s*. Light input to the rule works against it.
+
+`turing_prone_rule(rng, C, T; nb=0.4, inp=2, light_in=0.25, bias=0.5, read=3)`:
+`W_nb = nb·QQᵀ/C` (positive semidefinite: no anti-diffusion), strong `W_in` with a
+weak light column, strong read-outs with `v_dep` aligned and `v_ero` anti-aligned
+to `tanh(W_in[0.5,0.3,0.1,0.3] + b)`. On 2000 fresh points over the atlas physics
+grid: **Turing 9.2% vs 0.45%** for `random_rule` (gridscale 4.8% vs 14.0%, no
+steady state 5.8% vs 3.6%).
+
+## Deep slab: layered steady state
+
+`layered_steady_state(rule, p, Nz; M)` marches down from the lit face, each layer in
+local balance under the exact optical depth above; `relax_column` then runs the
+real `step!` on a `1×1×Nz` column (vertical coupling and transport on) from it.
+`julia --project=. bin/layers.jl 32 200000` on the ten Turing recipes (Nz 32,
+α_s = α_p = 2, t = 10 000):
+
+- Decoupled layers: Turing only in the top layer (top 3 for turing-08). By layer 3
+  L < 0.01 and the layers hold their mass as waste (w ≈ M). Below the top: stable
+  in 5 recipes, gridscale in 4 (dark layers with s ≈ 0, where g* = g0 is largest), a
+  homogeneous layer in 1.
+- Coupled column: the dark layers become a waste reservoir holding 62–89% of the
+  column's mass (9 of 10 recipes; turing-09 keeps it as nutrient). Waste diffuses up,
+  is regenerated at the top, and the top layer often crusts (s* 0.99–1.0 in
+  turing-06, 07, 10). The top layer stays Turing in 2 of 10 (02, 08); it turns
+  stable in 7 and homogeneous in 1 (turing-01); in turing-09 the dark layers
+  become mixed.
+  turing-01: top s 0.245 → 0.740, layer 2 s 0.120 → 0.048, dark w 0.48.
+
+So a deep, opaque slab makes vertical structure first: a lit skin one to three
+layers thick over a dark waste store. That store changes the top layer's balance
+enough to remove the Turing prediction in most recipes. The predictions are exact
+for `N×N×1` worlds; for slabs use thin optics or few layers, or re-derive the class
+from the relaxed column.
