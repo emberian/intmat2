@@ -23,6 +23,65 @@ end
 const A = parse_args(ARGS)
 arg(k, default) = haskey(A, k) ? (default isa String ? A[k] : parse(typeof(default), A[k])) : default
 
+
+# --- correlate mode: does lane A's linear analysis predict the measured structure?
+#   julia --project=. bin/evolve.jl --correlate results/evolve-a.jsonl,results/evolve-b.jsonl --out name
+if haskey(A, "correlate")
+    using Intmat2.Analysis: steady_state, dispersion, classify
+    numfield(line, key) = (m = match(Regex("\"$key\":(-?[0-9.eE+-]+|null)"), line);
+                           m === nothing || m[1] == "null" ? NaN : parse(Float64, m[1]))
+    ranks(v) = (o = sortperm(v); r = similar(v, Float64); r[o] = 1:length(v); r)
+    spearman(a, b) = cor(ranks(a), ranks(b))
+    rows = NamedTuple[]
+    for f in split(A["correlate"], ",")
+        for line in eachline(f)
+            θ = parse.(Float64, split(match(r"\"theta\":\[([^\]]*)\]", line)[1], ","))
+            ph = match(r"\"physics\":\{([^}]*)\}", line)[1]
+            pd = Dict(Symbol(strip(k, '"')) => parse(Float64, v) for (k, v) in (split(kv, ":") for kv in split(ph, ",")))
+            p64 = Physics{Float64}(; pd...)
+            C = round(Int, (-8 + sqrt(64 + 8length(θ))) / 4)
+            rule = Rule{C,Float64}(θ)
+            ss = steady_state(rule, p64; M=numfield(line, "n0"), depth=1)
+            d = ss.converged ? dispersion(rule, p64, ss) : nothing
+            cls = d === nothing ? :unconverged : classify(d)
+            push!(rows, (file=basename(f), id=Int(numfield(line, "id")), cls=cls,
+                         lambda_max=d === nothing ? NaN : d.lambda_max, re0=d === nothing ? NaN : d.re0,
+                         wavelength=d === nothing ? NaN : d.wavelength,
+                         structure=numfield(line, "structure"), structure_top=numfield(line, "structure_top"), lam_meas=numfield(line, "lambda"),
+                         struct_frac=numfield(line, "struct_frac")))
+        end
+    end
+    ok = filter(r -> isfinite(r.lambda_max), rows)
+    finite_growth = [r.lambda_max - max(r.re0, 0.0) for r in ok]   # finite-k excess over k=0
+    S = [r.structure for r in ok]
+    bycls = Dict(string(c) => (n=count(r -> r.cls == c, rows),
+                               mean_structure=mean([r.structure for r in rows if r.cls == c]),
+                               frac_structured=mean([r.structure > 0.1 for r in rows if r.cls == c]))
+                 for c in unique(r.cls for r in rows))
+    tur = filter(r -> r.cls in (:turing, :wave) && r.structure > 0.1, rows)
+    out = (command="julia --project=. bin/evolve.jl " * join(ARGS, " "), n=length(rows), n_analyzed=length(ok),
+           spearman_structure_vs_lambda_max=spearman(S, [r.lambda_max for r in ok]),
+           spearman_structure_vs_finite_excess=spearman(S, finite_growth),
+           spearman_structure_top_vs_lambda_max=(St = [r.structure_top for r in ok]; all(isfinite, St) ? spearman(St, [r.lambda_max for r in ok]) : NaN),
+           by_class=bycls,
+           turing_structured_wavelength_pred_vs_meas=[(id=r.id, file=r.file, pred=r.wavelength, meas=r.lam_meas) for r in tur])
+    open(joinpath(@__DIR__, "..", "results", "evolve-$(get(A, "out", "atlas"))-correlation.json"), "w") do io
+        js(x::AbstractString) = "\"" * escape_string(x) * "\""
+        js(x::Symbol) = js(string(x)); js(x::Integer) = string(x)
+        js(x::AbstractFloat) = isfinite(x) ? repr(Float64(x)) : "null"
+        js(x::Union{AbstractVector,Tuple}) = "[" * join(js.(x), ",") * "]"
+        js(x::NamedTuple) = "{" * join((js(string(k)) * ":" * js(v) for (k, v) in pairs(x)), ",") * "}"
+        js(x::AbstractDict) = "{" * join((js(string(k)) * ":" * js(v) for (k, v) in x), ",") * "}"
+        println(io, js(out))
+    end
+    for (c, v) in bycls
+        @printf("%-12s n=%4d mean structure %.3f  frac>0.1 %.3f\n", c, v.n, v.mean_structure, v.frac_structured)
+    end
+    @printf("spearman(structure, max Re λ) = %.3f   (vs finite-k excess) = %.3f\n",
+            out.spearman_structure_vs_lambda_max, out.spearman_structure_vs_finite_excess)
+    exit(0)
+end
+
 run = arg("run", "test")
 backend_name = arg("backend", "cpu")
 be = if backend_name == "metal"
@@ -42,9 +101,27 @@ cfg = EvalConfig(dims=dims, T=arg("T", 1200), cont=arg("cont", 300), seed=arg("w
                  backend=be)
 pop = arg("pop", 48); gens = arg("gens", 8); seed = arg("seed", 1)
 modes = Symbol.(split(arg("modes", "random,nsga"), ","))
+# rule prior: --scales self=0.5,nb=0.2,inp=1,bias=0.1,read=2 (random_rule keywords)
+scales = haskey(A, "scales") ? (; (Symbol(k) => parse(Float64, v) for (k, v) in (split(kv, "=") for kv in split(A["scales"], ",")))...) : (;)
 init = nothing
 if haskey(A, "init")      # comma-separated recipe files whose θ seed the first population
     init = [Float64.(vec(read_recipe(f)[1])) for f in split(A["init"], ",")]
+end
+# --init-turing K: add up to K rules drawn from the prior that lane A's linear analysis
+# classifies :turing under this physics (top layer), searched with MersenneTwister(seed+1)
+if haskey(A, "init-turing")
+    @eval using Intmat2.Analysis: steady_state, dispersion, classify
+    K = parse(Int, A["init-turing"]); rng2 = MersenneTwister(seed + 1); p64 = Physics{Float64}(p)
+    found = Vector{Float64}[]; tries = 0
+    while length(found) < K && tries < 20000
+        tries += 1
+        rule = random_rule(rng2, C, Float64; scales...)
+        ss = Base.invokelatest(steady_state, rule, p64; M=cfg.n0, depth=1)
+        ss.converged || continue
+        Base.invokelatest(classify, Base.invokelatest(dispersion, rule, p64, ss)) == :turing && push!(found, vec(rule))
+    end
+    println("init-turing: $(length(found)) turing rules in $tries draws")
+    init = vcat(something(init, Vector{Float64}[]), found)
 end
 outdir = joinpath(@__DIR__, "..", "results"); recdir = joinpath(@__DIR__, "..", "recipes")
 mkpath(outdir); mkpath(recdir)
@@ -66,10 +143,75 @@ cfgnt = (dims=cfg.dims, T=cfg.T, cont=cfg.cont, world_seed=cfg.seed, n0=cfg.n0, 
          rec_every=cfg.rec_every, probe_every=cfg.probe_every, nprobe=cfg.nprobe,
          reset_scale=cfg.reset_scale, backend=backend_name, C=C)
 
+# --- eval-recipes mode: score recipe rules, each under its own physics, with this eval config
+if haskey(A, "eval-recipes")
+    rows = Any[]
+    for f in split(A["eval-recipes"], ",")
+        rule, pr, d = read_recipe(f)
+        r = evaluate([rule], pr, cfg)[1]
+        pred = get(d, "predicted", Dict())
+        push!(rows, (recipe=basename(f), class=get(pred, "class", ""), lambda_max=get(pred, "lambda_max", NaN),
+                     wavelength=get(pred, "wavelength", NaN), physics=pr, theta=Float64.(vec(rule)), res=r))
+        @printf("%-36s %-8s pred λ=%5.1f  structure %.3f (λ_meas %5.1f, rms %.3f)  persistence %.3f temporal %.3f memory_h %.3f recovery %.3f mean_s %.3f\n",
+                basename(f), get(pred, "class", ""), get(pred, "wavelength", NaN), r.structure, r.lambda, r.struct_rms,
+                r.persistence, r.temporal, r.memory_h, r.recovery, r.mean_s)
+    end
+    open(joinpath(outdir, "evolve-$run.json"), "w") do io
+        println(io, js((command=cmd, commit=commit, eval=cfgnt, rows=rows)))
+    end
+    exit(0)
+end
+
+# --- recipe mode: write recipes/evolved-<name>.toml for archive rows, exact θ and physics
+#   --recipe results/evolve-g1neg-nsga.jsonl:123:name[,file:id:name...]
+if haskey(A, "recipe")
+    for spec in split(A["recipe"], ",")
+        f, id, name = split(spec, ":")
+        line = first(l for l in eachline(f) if occursin("\"id\":$id,", l))
+        θ = parse.(Float64, split(match(r"\"theta\":\[([^\]]*)\]", line)[1], ","))
+        ph = match(r"\"physics\":\{([^}]*)\}", line)[1]
+        pd = Dict(Symbol(strip(k, '"')) => parse(Float32, v) for (k, v) in (split(kv, ":") for kv in split(ph, ",")))
+        pr = Physics{Float32}(; pd...)
+        Cr = round(Int, (-8 + sqrt(64 + 8length(θ))) / 4)
+        obj = Dict{Symbol,Float64}()
+        for k in (ALL_OBJECTIVES..., :mean_s, :std_s, :struct_rms, :lambda, :photic)
+            m = match(Regex("\"$k\":(-?[0-9.eE+-]+)"), line)
+            m === nothing || (obj[k] = parse(Float64, m[1]))
+        end
+        path = joinpath(recdir, "evolved-$name.toml")
+        write_recipe(path, Rule{Cr,Float32}(Float32.(θ)), pr, cfg; N=cfg.dims, steps=cfg.T,
+                     backend=backend_name, note="archive $(basename(f)) id $id; eval $(cfg.dims) T=$(cfg.T)",
+                     objectives=(; obj...))
+        println(path)
+    end
+    exit(0)
+end
+
+# --- classify-prior mode: linear class fractions (lane A Analysis, top layer) of N rules
+#     drawn from this prior under this physics, before spending any GPU time on it
+if haskey(A, "classify-prior")
+    @eval using Intmat2.Analysis: steady_state, dispersion, classify
+    nr = parse(Int, A["classify-prior"]); rng = MersenneTwister(seed)
+    p64 = Physics{Float64}(p); counts = Dict{Symbol,Int}()
+    for _ in 1:nr
+        rule = random_rule(rng, C, Float64; scales...)
+        ss = Base.invokelatest(steady_state, rule, p64; M=cfg.n0, depth=1)
+        c = ss.converged ? Base.invokelatest(classify, Base.invokelatest(dispersion, rule, p64, ss)) : :no_steady_state
+        counts[c] = get(counts, c, 0) + 1
+    end
+    println(run, " ", scales, " ", sort(collect(counts), by=x -> -x[2]))
+    open(joinpath(outdir, "evolve-$run-prior.json"), "w") do io
+        println(io, js((command=cmd, commit=commit, physics=p, scales=scales, n=nr,
+                        fractions=Dict(string(k) => v / nr for (k, v) in counts))))
+    end
+    exit(0)
+end
+
 summary = Dict{String,Any}("command" => cmd, "commit" => commit, "run" => run, "physics" => p,
-                           "eval" => cfgnt, "pop" => pop, "gens" => gens, "seed" => seed,
+                           "eval" => cfgnt, "pop" => pop, "gens" => gens, "seed" => seed, "scales" => scales,
                            "select_objectives" => collect(SELECT_OBJECTIVES), "modes" => Dict{String,Any}())
 archives = Dict{Symbol,Any}()
+cache = Dict{Vector{Float64},Any}()
 for mode in modes
     path = joinpath(outdir, "evolve-$run-$mode.jsonl")
     io = open(path, "w")
@@ -84,7 +226,7 @@ for mode in modes
         println(io, js(line)); flush(io)
     end
     arch, P = evolve(C, p, cfg; mode=mode, pop=pop, gens=gens, seed=seed,
-                     init=mode == :nsga ? init : nothing, log=log)
+                     init=mode == :nsga ? init : nothing, log=log, cache=cache, scales=scales)
     close(io)
     wall = time() - t0
     F = reduce(hcat, [objvec(a.res, SELECT_OBJECTIVES) for a in arch])
@@ -112,6 +254,7 @@ for mode in modes
         end
         summary["modes"]["nsga"]["recipes"] = [w[1] for w in written]
     end
+    open(io -> println(io, js(summary)), joinpath(outdir, "evolve-$run.json"), "w")
 end
 # correlations between objectives over everything evaluated in this run
 Fall = reduce(hcat, [objvec(a.res, ALL_OBJECTIVES) for k in keys(archives) for a in archives[k].arch])

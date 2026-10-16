@@ -270,6 +270,7 @@ function evaluate_one(rule::Rule{C,T}, p::Physics{T}, cfg::EvalConfig) where {C,
     se = Array{Float64}(Array(er.s))
     fin &= all(isfinite, sc) && all(isfinite, hc) && all(isfinite, hp) && all(isfinite, se)
     st = structure(s_end)
+    sttop = structure(view(s_end, :, :, size(s_end, 3):size(s_end, 3)))   # the lit top layer alone
     tm = temporal(probes)
     mem = memory(sc, sp, hc, hp)
     lb = light_budget(Array{Float64}(Array(wd.L)), Float64(p.L0))
@@ -280,7 +281,7 @@ function evaluate_one(rule::Rule{C,T}, p::Physics{T}, cfg::EvalConfig) where {C,
     diag = (mean_s=last.mean_s, std_s=last.std_s, solid_frac=last.solid_frac, mean_n=last.mean_n,
             mean_w=last.mean_w, light_bottom=last.light_bottom, mean_abs_h=last.mean_abs_h,
             std_h=last.std_h, mass_drift=last.mass - trace[1].mass, struct_frac=st.frac,
-            struct_rms=st.rms, lambda=st.lambda, t_fixed=tm.fixed, t_periodic=tm.periodic, photic=lb.photic,
+            struct_rms=st.rms, lambda=st.lambda, structure_top=sttop.score, lambda_top=sttop.lambda, t_fixed=tm.fixed, t_periodic=tm.periodic, photic=lb.photic,
             h_autocorr=corr0(Array(wd.h), hc), finite=fin, wall=time() - t0)
     merge(map(x -> isfinite(x) ? x : 0.0, obj), diag)
 end
@@ -406,21 +407,30 @@ objvec(r::NamedTuple, objs) = Float64[clamp(getfield(r, o), 0.0, 1.0) for o in o
 `mode=:nsga`: (μ+λ) NSGA-II over z = θ ./ rule_scale(C): binary tournament on
 (rank, crowding), block-uniform crossover with probability 0.5, self-adaptive
 log-normal step `σ' = σ exp(0.2 N)`, `z' = z + σ' N`. `mode=:random`: every evaluation
-is a fresh `random_rule` draw (z ~ N(0,1)) — the equal-budget baseline. `init`: optional
+is a fresh `random_rule` draw (z ~ N(0,1)) — the equal-budget baseline. `scales`
+(keywords of `random_rule`: self, nb, inp, bias, read) sets the prior θ = scale ⊙ z. `init`: optional
 vector of θ to seed the first population (remaining slots are random). Every evaluated
-individual is passed to `log` as a record. Returns `(archive, final_population_indices)`.
+individual is passed to `log` as a record. `cache` (θ → result) is consulted before
+evaluating and filled after, so runs sharing a seed share their identical first
+population; cached individuals still count toward the evaluation budget. Returns `(archive, final_population_indices)`.
 """
 function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, gens=8, seed=1,
                 sigma0=0.3, init=nothing, eval=evaluate, objectives=SELECT_OBJECTIVES,
-                log=rec -> nothing) where {T}
+                log=rec -> nothing, cache=Dict{Vector{Float64},Any}(), scales=(;)) where {T}
     rng = MersenneTwister(seed)
-    scale = rule_scale(C); blocks = rule_blocks(C); np = length(scale)
+    scale = rule_scale(C; scales...); blocks = rule_blocks(C); np = length(scale)
     archive = NamedTuple[]
     function run_batch!(zs, sigmas, parents, gen)
         rules = [Rule{C,T}(T.(scale .* z)) for z in zs]
         zs = [Float64.(vec(r)) ./ scale for r in rules]    # z of the rule actually run
         t0 = time()
-        res = eval(rules, p, cfg)
+        keys_ = [Float64.(vec(r)) for r in rules]
+        todo = findall(k -> !haskey(cache, k), keys_)
+        fresh = isempty(todo) ? [] : eval(rules[todo], p, cfg)
+        for (j, i) in enumerate(todo)
+            cache[keys_[i]] = fresh[j]
+        end
+        res = [cache[k] for k in keys_]
         for (i, r) in enumerate(res)
             rec = (id=length(archive) + 1, gen=gen, mode=mode, parents=parents[i], sigma=sigmas[i],
                    theta=Float64.(vec(rules[i])), z=zs[i], res=r, batch_wall=time() - t0)
@@ -487,7 +497,7 @@ function write_recipe(path, rule::Rule{C}, p::Physics, cfg::EvalConfig; N=cfg.di
         "rule_scales" => Dict("self" => 0.8, "nb" => 0.8, "inp" => 0.5, "bias" => 0.1, "read" => 0.5),
         "physics" => Dict(string(f) => Float64(getfield(p, f)) for f in fieldnames(Physics)),
         "n0" => cfg.n0, "h_scale" => cfg.h_scale, "seed" => cfg.seed,
-        "N" => N isa Integer ? N : collect(N), "steps" => steps, "capture_every" => capture_every,
+        (N isa Integer ? "N" : "dims") => (N isa Integer ? N : collect(N)), "steps" => steps, "capture_every" => capture_every,
         "backend" => backend, "note" => note)
     objectives === nothing || (d["objectives"] = Dict(string(k) => Float64(v) for (k, v) in pairs(objectives)
                                                        if v isa Real && !(v isa Bool)))
@@ -499,7 +509,12 @@ end
 function read_recipe(path; T=Float32)
     d = TOML.parsefile(path)
     C = d["C"]
-    rule = Rule{C,T}(T.(d["theta"]))
+    rule = if haskey(d, "theta")
+        Rule{C,T}(T.(d["theta"]))
+    else    # seed-constructed (lane A atlas recipes): random_rule(MersenneTwister(seed), C, Float64; rule_scales...)
+        sc = Dict(Symbol(k) => v for (k, v) in get(d, "rule_scales", Dict()))
+        convert(Rule{C,T}, random_rule(MersenneTwister(d["seed"]), C, Float64; sc...))
+    end
     ph = d["physics"]
     p = Physics{T}(; (f => T(ph[string(f)]) for f in fieldnames(Physics) if haskey(ph, string(f)))...)
     rule, p, d
