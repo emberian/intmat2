@@ -50,3 +50,25 @@ end
     wz = light!(World(CPU(), r, (6, 6, 6); T=Float64, seed=1), r, p)
     @test wa.L ≈ wz.L .+ 0.25
 end
+
+@testset "isotropic stencil: conservation, batch, stencil 0 untouched" begin
+    C = 8
+    r = tied_rule(MersenneTwister(1), C, Float64; nb1=12, beta=0.4)
+    p = Physics{Float64}(dt=0.01, stencil=Int32(1))
+    w = light!(World(CPU(), r, (12, 10, 8); T=Float64, h_scale=0.3, s0=0.3, seed=4), r, p)
+    m0 = total_mass(w)
+    w = run!(w, r, p, 200)
+    @test total_mass(w) ≈ m0 atol = 1e-9 * m0
+    @test all(0 .<= w.s .<= 1) && all(-1 .<= w.h .<= 1) && !any(isnan, w.h)
+    p0 = Physics{Float64}(dt=0.01)
+    w0 = run!(light!(World(CPU(), r, (12, 10, 8); T=Float64, h_scale=0.3, s0=0.3, seed=4), r, p0), r, p0, 20)
+    w1 = run!(light!(World(CPU(), r, (12, 10, 8); T=Float64, h_scale=0.3, s0=0.3, seed=4), r, p), r, p, 20)
+    @test w0.h != w1.h
+    # WorldBatch honours the stencil
+    rs = [r, tied_rule(MersenneTwister(2), C, Float64; nb1=12, beta=0.4)]
+    wb = run!(light!(WorldBatch(CPU(), C, (7, 5, 6), 2; T=Float64, seeds=[3, 5], h_scale=0.3), rs, p), rs, p, 15)
+    for b in 1:2
+        wa = run!(light!(World(CPU(), C, (7, 5, 6); T=Float64, seed=[3, 5][b], h_scale=0.3), rs[b], p), rs[b], p, 15)
+        @test world(wb, b).h == wa.h && world(wb, b).s == wa.s
+    end
+end

@@ -131,6 +131,7 @@ Base.@kwdef struct Physics{T}
     alpha_p::T = 0.1    # light absorption per unit pigment per cell
     L0::T = 1.0         # illumination at the top face
     L_ambient::T = 0.0  # uniform light added everywhere (no vertical gradient when L0 = 0)
+    stencil::Int32 = 0  # activity coupling: 0 axis ring/shell (6 + 6), 1 isotropic 19-point ring and shell
 end
 
 Physics{T}(p::Physics) where {T} = Physics{T}(; (f => T(getfield(p, f)) for f in fieldnames(Physics))...)

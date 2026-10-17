@@ -1,8 +1,10 @@
 # One complete step is two passes:
 #   update: h, s, n, w, L → h2, s2, n2, w2, and the absorbance A (written into L)
 #           per voxel, in this order: activity (h2 from old h, s, n, w, L; coupling
-#           over the ring at distance 1 through Wnb and the axis shell at distance 2
-#           through Wnb2, which reads only h and s there),
+#           over the ring at distance 1 through Wnb and the shell at distance 2 through
+#           Wnb2, which reads only h and s there; p.stencil 0: the 6 axis neighbours
+#           each; 1: isotropic 19-point stencils, axis ×1/3 plus the 12 edge diagonals
+#           ×1/6, the shell the same dilated by 2),
 #           transport (diffusion of old n, w through old s), material (dep, ero, photo
 #           on the transported n, w with old s, old L and new h2), absorbance of (s2, h2).
 #   light:  A → L, one work-item per (i, j) column marching down from the lit top face.
@@ -105,6 +107,26 @@ end
     @inbounds conductance(p, sx, s[y + Int32(1)]) .* (loadh(h, Val(C), y) - hx)
 end
 
+# Σ over the 12 edge diagonals at scale d ((±d,±d,0), (±d,0,±d), (0,±d,±d)) of
+# g(s_x, s_y)·(h_y − h_x); x, y periodic, z offsets outside the slab skipped.
+const EDGES = ((1, 1, 0), (1, -1, 0), (-1, 1, 0), (-1, -1, 0), (1, 0, 1), (1, 0, -1),
+               (-1, 0, 1), (-1, 0, -1), (0, 1, 1), (0, 1, -1), (0, -1, 1), (0, -1, -1))
+@inline function edge_coupling(h, s, p::Physics{T}, ::Val{C}, hx, sx, q::Int32, i::Int32, j::Int32,
+                               k::Int32, Nx::Int32, Ny::Int32, Nz::Int32, d::Int32) where {C,T}
+    terms = ntuple(Val(12)) do e
+        di, dj, dk = EDGES[e]
+        kk = k + Int32(dk) * d
+        if Int32(0) <= kk < Nz
+            y = q + (wrap(i + Int32(di) * d, Nx) - i) + (wrap(j + Int32(dj) * d, Ny) - j) * Nx +
+                Int32(dk) * d * Nx * Ny
+            shell(h, s, p, Val(C), hx, sx, y)
+        else
+            zero(SVector{C,T})
+        end
+    end
+    foldl(+, terms)
+end
+
 # Neighbour at offset y: its contribution to the coupling m and to the fluxes fn, fw.
 @inline function face(h, s, n, w, p::Physics{T}, ::Val{C}, hx, sx, nx, wx, y::Int32) where {C,T}
     @inbounds begin
@@ -172,6 +194,13 @@ end
             end
             if k >= two
                 m2 += shell(h, s, p, Val(C), hx, sx, q - two * NxNy)
+            end
+        end
+        if p.stencil != Int32(0)
+            # isotropic 19-point ring and (dilated) shell; transport stays 6-face
+            m = m * (one(T) / 3) + edge_coupling(h, s, p, Val(C), hx, sx, q, i, j, k, Nx, Ny, Nz, Int32(1)) * (one(T) / 6)
+            if shell2
+                m2 = m2 * (one(T) / 3) + edge_coupling(h, s, p, Val(C), hx, sx, q, i, j, k, Nx, Ny, Nz, Int32(2)) * (one(T) / 6)
             end
         end
         # activity
