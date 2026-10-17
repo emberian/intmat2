@@ -64,6 +64,7 @@ if haskey(A, "correlate")
            spearman_structure_vs_lambda_max=spearman(S, [r.lambda_max for r in ok]),
            spearman_structure_vs_finite_excess=spearman(S, finite_growth),
            spearman_structure_top_vs_lambda_max=(St = [r.structure_top for r in ok]; all(isfinite, St) ? spearman(St, [r.lambda_max for r in ok]) : NaN),
+           turing_lambda_max_quartiles=(lt = [r.lambda_max for r in rows if r.cls == :turing]; isempty(lt) ? Float64[] : quantile(lt, [0.25, 0.5, 0.75])),
            frac_dt_unstable=mean(r.stable_dt < r.dt for r in ok),
            unstable_dt_ids=[(file=r.file, id=r.id, stable_dt=r.stable_dt, structure=r.structure) for r in ok if r.stable_dt < r.dt],
            by_class=bycls,
@@ -80,6 +81,7 @@ if haskey(A, "correlate")
     for (c, v) in bycls
         @printf("%-12s n=%4d mean structure %.3f  frac>0.1 %.3f\n", c, v.n, v.mean_structure, v.frac_structured)
     end
+    println("turing λ_max quartiles: ", out.turing_lambda_max_quartiles)
     @printf("stable_dt < dt for %.3f of analyzed rules\n", out.frac_dt_unstable)
     @printf("spearman(structure, max Re λ) = %.3f   (vs finite-k excess) = %.3f\n",
             out.spearman_structure_vs_lambda_max, out.spearman_structure_vs_finite_excess)
@@ -189,7 +191,7 @@ if haskey(A, "recipe")
         end
         path = joinpath(recdir, "evolved-$name.toml")
         write_recipe(path, Rule{Cr,Float32}(Float32.(θ)), pr, cfg; N=cfg.dims, steps=cfg.T,
-                     backend=backend_name, note="archive $(basename(f)) id $id; eval $(cfg.dims) T=$(cfg.T)",
+                     backend=arg("recipe_backend", "metal"), note="archive $(basename(f)) id $id; eval $(cfg.dims) T=$(cfg.T)",
                      objectives=(; obj...))
         println(path)
     end
@@ -213,6 +215,40 @@ if haskey(A, "classify-prior")
         println(io, js((command=cmd, commit=commit, physics=p, scales=scales, n=nr,
                         fractions=Dict(string(k) => v / nr for (k, v) in counts))))
     end
+    exit(0)
+end
+
+# --- hv mode: hypervolume and per-objective best of archives, all rules and only the
+# rules passing the explicit-Euler check (ids from evolve-<run>-correlation.json)
+#   --hv results/evolve-g1neg-random.jsonl,... --out name
+if haskey(A, "hv")
+    rows = Any[]
+    for f in split(A["hv"], ",")
+        runname = match(r"evolve-(.*)-(random|nsga)\.jsonl", basename(f))[1]
+        cj = joinpath(dirname(f), "evolve-$runname-correlation.json")
+        bad = Set{Int}()
+        if isfile(cj)
+            for m in eachmatch(Regex("\\{\"file\":\"$(basename(f))\",\"id\":(\\d+)"), read(cj, String))
+                push!(bad, parse(Int, m[1]))
+            end
+        end
+        F = Vector{Float64}[]; Fok = Vector{Float64}[]
+        for line in eachline(f)
+            id = parse(Int, match(r"\"id\":(\d+)", line)[1])
+            v = [clamp(parse(Float64, match(Regex("\"$o\":(-?[0-9.eE+-]+)"), line)[1]), 0.0, 1.0) for o in SELECT_OBJECTIVES]
+            push!(F, v); id in bad || push!(Fok, v)
+        end
+        M = reduce(hcat, F); Mok = reduce(hcat, Fok)
+        row = (archive=basename(f), n=length(F), n_dt_ok=length(Fok),
+               hv=hypervolume(M; rng=MersenneTwister(12345)), hv_dt_ok=hypervolume(Mok; rng=MersenneTwister(12345)),
+               best=NamedTuple{SELECT_OBJECTIVES}(Tuple(maximum(M, dims=2))),
+               best_dt_ok=NamedTuple{SELECT_OBJECTIVES}(Tuple(maximum(Mok, dims=2))))
+        push!(rows, row)
+        @printf("%-28s n=%3d ok=%3d  HV %.4f  HV(dt ok) %.4f  best(ok) %s\n", row.archive, row.n, row.n_dt_ok, row.hv, row.hv_dt_ok,
+                join(("$k=$(round(v, digits=3))" for (k, v) in pairs(row.best_dt_ok)), " "))
+    end
+    open(io -> println(io, js((command=cmd, commit=commit, objectives=SELECT_OBJECTIVES, rows=rows))),
+         joinpath(outdir, "evolve-$(get(A, "out", "hv"))-hv.json"), "w")
     exit(0)
 end
 

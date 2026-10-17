@@ -3,7 +3,7 @@ using Intmat2: EvalConfig, evaluate, evaluate_one, structure, temporal, persiste
     nondominated_rank, nsga_select, hypervolume, evolve, write_recipe, read_recipe, rule_scale
 
 @testset "evolve: objective sanity" begin
-    C = 4; np = 2C * C + 8C
+    C = 4; np = 2C * C + 8C   # one-ring layout (Wnb2 = 0)
     p = Physics{Float32}(dt=0.1f0)
     cfg = EvalConfig(dims=(12, 12, 6), T=200, cont=60, rec_every=10, probe_every=2, nprobe=6,
                      concurrency=2)
@@ -52,7 +52,7 @@ end
     @test length(arch) == 8 && length(P) == 4
     arch2, _ = evolve(C, p, cfg; pop=4, gens=2, seed=3)
     @test [a.theta for a in arch] == [a.theta for a in arch2]   # re-runnable from the seed
-    @test arch[1].theta ≈ rule_scale(C) .* arch[1].z
+    @test arch[1].theta[1:length(arch[1].z)] ≈ rule_scale(C) .* arch[1].z
     path = tempname() * ".toml"
     r = Rule{C,Float32}(Float32.(arch[5].theta))
     write_recipe(path, r, p, cfg; objectives=arch[5].res)

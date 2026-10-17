@@ -397,16 +397,30 @@ end
 
 # ----------------------------------------------------------------------------- search
 
-"""Per-parameter scale of `random_rule` (θ = scale ⊙ z, z ~ N(0,1) is a random rule)."""
-function rule_scale(C; self=0.8, nb=0.8, inp=0.5, bias=0.1, read=0.5)
+"""Per-parameter scale of `random_rule` (θ = scale ⊙ z, z ~ N(0,1) is a random rule).
+With `nb2 = 0` (default) the search space is the one-ring layout (2C²+8C, `Wnb2 = 0`);
+`nb2 > 0` appends the second-shell block (3C²+8C)."""
+function rule_scale(C; self=0.8, nb=0.8, inp=0.5, bias=0.1, read=0.5, nb2=0.0)
     sc = 1 / sqrt(C)
-    vcat(fill(self * sc, C * C), fill(nb * sc, C * C), fill(inp, 4C), fill(bias, C), fill(read, 3C))
+    v = vcat(fill(self * sc, C * C), fill(nb * sc, C * C), fill(inp, 4C), fill(bias, C), fill(read, 3C))
+    nb2 > 0 ? vcat(v, fill(nb2 * sc, C * C)) : v
 end
-"""Block boundaries of θ (Wself, Wnb, Win, b, vdep, vero, vpig) for block crossover."""
-rule_blocks(C) = (o = cumsum([0, C * C, C * C, 4C, C, C, C, C]); [o[i]+1:o[i+1] for i in 1:7])
+"""Block boundaries of θ (Wself, Wnb, Win, b, vdep, vero, vpig[, Wnb2]) for block crossover."""
+function rule_blocks(C, np=2C * C + 8C)
+    o = cumsum([0, C * C, C * C, 4C, C, C, C, C])
+    bl = [o[i]+1:o[i+1] for i in 1:7]
+    np > o[end] ? push!(bl, o[end]+1:np) : bl
+end
 
-"""Selection vector in [0,1]; all zeros (dominated by every feasible rule) when the
-rule fails the explicit-Euler check `dt_ok` (absent in old archives ⇒ feasible)."""
+"""Search coordinates of θ: the first `np` entries over `scale`; a nonzero entry beyond
+`np` (a second shell the search does not include) is an error, not a silent truncation."""
+function θ_to_z(θ, scale)
+    np = length(scale)
+    all(iszero, view(θ, np+1:length(θ))) ||
+        throw(ArgumentError("θ has a nonzero Wnb2 block; search it with scales nb2 > 0"))
+    Float64.(θ[1:np]) ./ scale
+end
+
 objvec(r::NamedTuple, objs) = get(r, :dt_ok, true) ? Float64[clamp(getfield(r, o), 0.0, 1.0) for o in objs] :
                                                     zeros(length(objs))
 
@@ -430,12 +444,12 @@ function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, 
                 sigma0=0.3, init=nothing, eval=evaluate, objectives=SELECT_OBJECTIVES,
                 log=rec -> nothing, cache=Dict{Vector{Float64},Any}(), scales=(;), sampler=nothing) where {T}
     rng = MersenneTwister(seed)
-    scale = rule_scale(C; scales...); blocks = rule_blocks(C); np = length(scale)
-    draw() = sampler === nothing ? randn(rng, np) : Float64.(sampler(rng)) ./ scale
+    scale = rule_scale(C; scales...); np = length(scale); blocks = rule_blocks(C, np)
+    draw() = sampler === nothing ? randn(rng, np) : θ_to_z(sampler(rng), scale)
     archive = NamedTuple[]
     function run_batch!(zs, sigmas, parents, gen)
         rules = [Rule{C,T}(T.(scale .* z)) for z in zs]
-        zs = [Float64.(vec(r)) ./ scale for r in rules]    # z of the rule actually run
+        zs = [θ_to_z(vec(r), scale) for r in rules]    # z of the rule actually run
         t0 = time()
         keys_ = [Float64.(vec(r)) for r in rules]
         todo = findall(k -> !haskey(cache, k), keys_)
@@ -454,7 +468,7 @@ function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, 
     z0 = [draw() for _ in 1:pop]
     if init !== nothing
         for (i, θ) in enumerate(init[1:min(end, pop)])
-            z0[i] = Float64.(θ) ./ scale
+            z0[i] = θ_to_z(θ, scale)
         end
     end
     P = collect(run_batch!(z0, fill(sigma0, pop), fill(Int[], pop), 0))
@@ -508,7 +522,7 @@ function write_recipe(path, rule::Rule{C}, p::Physics, cfg::EvalConfig; N=cfg.di
     d = Dict{String,Any}(
         "name" => splitext(basename(path))[1], "s0" => 0.0, "C" => C, "theta" => Float64.(vec(rule)),
         "rule_scales" => Dict("self" => 0.8, "nb" => 0.8, "inp" => 0.5, "bias" => 0.1, "read" => 0.5),
-        "physics" => Dict(string(f) => Float64(getfield(p, f)) for f in fieldnames(Physics)),
+        "physics" => Dict(string(f) => parse(Float64, string(getfield(p, f))) for f in fieldnames(Physics)),
         "n0" => cfg.n0, "h_scale" => cfg.h_scale, "seed" => cfg.seed,
         (N isa Integer ? "N" : "dims") => (N isa Integer ? N : collect(N)), "steps" => steps, "capture_every" => capture_every,
         "backend" => backend, "note" => note)
