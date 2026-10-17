@@ -25,7 +25,10 @@ function load_recipe(path, overrides=Pair{String,Any}[])
     r = merge(RUN_DEFAULTS, TOML.parsefile(path), Dict(overrides))
     haskey(r, "dims") && any(first(o) in ("N", "Nz") for o in overrides) && delete!(r, "dims")
     haskey(r, "capture_every") || (r["capture_every"] = max(r["steps"] ÷ 10, 1))
-    phys = merge(Dict(k => v for (k, v) in r if Symbol(k) in fieldnames(Physics)), get(r, "physics", Dict()))
+    isphys(k) = Symbol(k) in fieldnames(Physics)
+    # [physics] table over top-level fields; command-line overrides over both
+    phys = merge(Dict(k => v for (k, v) in r if isphys(k)), get(r, "physics", Dict()),
+                 Dict(k => v for (k, v) in overrides if isphys(k)))
     p = Physics{Float32}(; (Symbol(k) => Float32(v) for (k, v) in phys)...)
     C = r["C"]; seed = get(r, "seed", 0)
     rule = if haskey(r, "theta")
