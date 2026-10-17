@@ -36,7 +36,7 @@ def card(item):
         links.append(f'<a href="viewer/viewer.html?v=../collection/{name}/volume&amp;name={html.escape(name)}">volume</a>')
     if (d / 'film.mp4').exists():
         links.append(f'<a href="collection/{name}/film.mp4">film</a>')
-    for f in ('recipe.toml', 'optics.toml', 'manifest.json'):
+    for f in ('recipe.toml', 'run.toml', 'optics.toml', 'manifest.json'):
         if (d / f).exists():
             links.append(f'<a href="collection/{name}/{f}">{f}</a>')
     img = f'<a href="collection/{name}/{photo}"><img src="collection/{name}/{photo}" alt="{html.escape(item.get("title", name))}" loading="lazy"></a>' if photo else ''

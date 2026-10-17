@@ -70,11 +70,16 @@ push to `dev`: https://emberian.github.io/intmat2/. Raw runs stay in `outputs/` 
 
 | name | run | what it shows |
 |---|---|---|
+| lamellae | tied-10 (two-shell), 128×128×48, 5442 steps | through-depth sheets in x/y stripe grains, λ 6.9 (pred. 6.6); film |
+| lamellae-section | same, diagonal cut | sheets on the cut face, dimming with depth |
+| crossgrain | tied-09, 13476 steps | stripe grains sharpening while solid erodes to waste |
+| lamellae-sheet | tied-10, Nz 16 | same wavelength and mosaic in a thin sheet |
 | veined-floor | atlas turing-04, α 0.05/0.02, 20000 steps | chambers walled in pigment, in the dim bottom; plus a film |
 | strata-section | same run, diagonal cut | crust, blotch band, clear band, vein network |
 | receding-front | turing-04, α 0.05/0.1, 8000 steps | lobed solid front over a dark, fully pigmented lower half |
 | crust-underside | turing-06, α 0.05/0.1, 4000 steps | 12-layer crust seen from the empty, nutrient-rich space below |
 | lit-skin | turing-02, original α 2.0 | crust with light shafts over dark waste |
 
-Most random and atlas rules at 128³ give strata with little lateral structure
-(`std_s` mostly from depth). turing-04 at translucent optics is the clearest exception so far.
+One-ring random and atlas rules mostly give depth strata or single-cell checkerboards.
+The tied two-shell recipes give the predicted 6–8 cell lateral pattern at every depth.
+Tied recipes need `fast=false` on Metal: fast tanh returns NaN in one step.

@@ -1,12 +1,47 @@
 [
-  {"name": "veined-floor", "title": "Veined floor",
-   "caption": "Atlas rule turing-04 at translucent optics (alpha_s 0.05, alpha_p 0.02), 128³, 20000 steps. The bottom 15 layers, lit only by the 3% of light that reaches them. Activity settled into single-cell alternating domains; pigment collects where domains meet, so the walls between chambers are drawn in pigment. The structure is fixed by step ~8000. The film is a fresh run of the same recipe to step 4000, the front quarter cut away: a pigment tide sinks and leaves the veins behind."},
-  {"name": "strata-section", "title": "Strata, same specimen",
-   "caption": "The veined-floor run cut on a vertical diagonal: a bright crust, a band of pigment blotches under it, a clearer middle layer, and the vein network in the dim bottom. Pigment is shown above 0.6 with a camera-only stain."},
-  {"name": "receding-front", "title": "Receding front",
-   "caption": "turing-04 again with the newer defaults (alpha_s 0.05, alpha_p 0.1), 8000 steps. Solid fills only the upper half and ends in a lobed front. Below it, the dark lower half holds uniform pigment (0.99) and no solid. Exposure 16 to see the front at L ≈ 0.01."},
-  {"name": "crust-underside", "title": "Crust from beneath",
-   "caption": "Atlas turing-06 at alpha_s 0.05, alpha_p 0.1, 4000 steps. All the solid is in a 12-layer crust; below it nutrient stays at 0.5, unspent, because nothing deposits there. The camera sits in that empty lower half and looks up at the crust's pigmented, nodular underside, lit by the light that got through."},
-  {"name": "lit-skin", "title": "Lit skin (original optics)",
-   "caption": "Atlas turing-02 with the original alpha 2.0 per cell, 3000 steps. Light dies within a few layers, so the material is a bright crust about eight layers down. Under it, columns of transmitted light make streaks, and below that the slab is dark waste. This is the regime the translucent defaults replaced."}
+ {
+  "name": "lamellae",
+  "title": "Lamellae",
+  "caption": "Analysis-lane recipe tied-20261016-10 (two-shell rule, predicted Turing at 6.6 cells), 128×128×48, alpha_s 0.05, alpha_p 0.1, dt 0.0055, run 6× its 8-e-fold length (5442 steps). Solid organizes into sheets that go through the whole depth. The sheets form grains of x-oriented and y-oriented stripes, because the second shell couples only along the axes. Measured s wavelength 6.9 cells (FFT centroid) against 6.6 predicted. Contrast saturates (std_s 0.155 at the recipe's end, 0.233 at 6×) while mean s creeps from 0.16 to 0.34 and waste accumulates. The film is the same run: a uniform pigmented skin breaks into a labyrinth, which coarsens into grains."
+ },
+ {
+  "name": "lamellae-section",
+  "title": "Lamellae, cut",
+  "caption": "The same specimen cut on a vertical diagonal. Lit only by its own light, the sheets read as diagonal bands on the cut face and dim with depth."
+ },
+ {
+  "name": "crossgrain",
+  "title": "Cross-grain",
+  "caption": "tied-20261016-09 (predicted 7.05 cells, measured 7.26), 13476 steps (6× recipe). Same mosaic of orthogonal stripe grains. Here the pattern keeps sharpening after it forms (std_s 0.10 → 0.20) while erosion slowly converts solid to waste (mean s 0.37 → 0.29, w 0.04 → 0.18)."
+ },
+ {
+  "name": "lamellae-sheet",
+  "title": "Lamellae in a sheet",
+  "caption": "tied-20261016-10 in a 16-cell-thick sheet instead of 48. Same wavelength (6.9) and the same grain mosaic: the pattern is set by the activity rule, not by depth or by the light gradient. A run with L_ambient 0.3 and L0 0.7 (weaker vertical gradient) also gave 6.9 cells and std_s 0.24, with no visible difference except a brighter interior."
+ },
+ {
+  "name": "veined-floor",
+  "title": "Veined floor",
+  "caption": "Atlas rule turing-04 at translucent optics (alpha_s 0.05, alpha_p 0.02), 128³, 20000 steps. The bottom 15 layers, lit only by the 3% of light that reaches them. Activity settled into single-cell alternating domains; pigment collects where domains meet, so the walls between chambers are drawn in pigment. The structure is fixed by step ~8000. The film is a fresh run of the same recipe to step 4000, the front quarter cut away: a pigment tide sinks and leaves the veins behind."
+ },
+ {
+  "name": "strata-section",
+  "title": "Strata, same specimen",
+  "caption": "The veined-floor run cut on a vertical diagonal: a bright crust, a band of pigment blotches under it, a clearer middle layer, and the vein network in the dim bottom. Pigment is shown above 0.6 with a camera-only stain."
+ },
+ {
+  "name": "receding-front",
+  "title": "Receding front",
+  "caption": "turing-04 again with the newer defaults (alpha_s 0.05, alpha_p 0.1), 8000 steps. Solid fills only the upper half and ends in a lobed front. Below it, the dark lower half holds uniform pigment (0.99) and no solid. Exposure 16 to see the front at L ≈ 0.01."
+ },
+ {
+  "name": "crust-underside",
+  "title": "Crust from beneath",
+  "caption": "Atlas turing-06 at alpha_s 0.05, alpha_p 0.1, 4000 steps. All the solid is in a 12-layer crust; below it nutrient stays at 0.5, unspent, because nothing deposits there. The camera sits in that empty lower half and looks up at the crust's pigmented, nodular underside, lit by the light that got through."
+ },
+ {
+  "name": "lit-skin",
+  "title": "Lit skin (original optics)",
+  "caption": "Atlas turing-02 with the original alpha 2.0 per cell, 3000 steps. Light dies within a few layers, so the material is a bright crust about eight layers down. Under it, columns of transmitted light make streaks, and below that the slab is dark waste. This is the regime the translucent defaults replaced."
+ }
 ]
