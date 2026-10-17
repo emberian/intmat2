@@ -3,3 +3,4 @@
 /results/scratch/
 *.jl.cov
 /site/data/
+/_site/
