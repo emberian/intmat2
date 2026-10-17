@@ -3,8 +3,8 @@
 Code: `src/evolve.jl` (objectives, `evaluate`, NSGA-II, recipes), `bin/evolve.jl`
 (experiments and post-hoc modes), `test/evolve.jl`. Archives: `results/evolve-<run>-<mode>.jsonl`,
 one line per evaluated rule (θ, z, σ, parents, seeds, physics, eval config, objectives,
-diagnostics, wall time). All results below are **one-ring** rules (`Wnb2 = 0`; the
-second shell was not yet wired into the step).
+diagnostics, wall time). Runs g1neg, g1pos, prone, lowmass used the **one-ring** step
+(`Wnb2 = 0`, before 69b4888); runs tied and tiedbase used the **two-shell** step.
 
 ## Measurement
 
@@ -56,6 +56,8 @@ dt-checked numbers are recomputed post hoc (`--correlate`, `--hv`).
 | g1pos: g1 +0.5, same | 192 | 0.0026 | 0.0123 | 0.0024 | 0.0011 |
 | prone: g1 −0.5, α_s 0.05, α_p 0.1, n0 0.5, Turing-prone prior | 160 | 0.0107 | 0.0059 | 0.0107 | 0.0059 |
 | lowmass: same physics, Gaussian prior | 160 | 0.0038 | — | 0.0031 | — |
+| tied (two-shell): same, dt 0.05, `tied_rule` prior, Wnb2 searched | 160 | 0.0916 | 0.1282 | 0.0913 | **0.1132** |
+| tiedbase (two-shell step): same, Gaussian one-ring prior | 160 | 0.0043 | — | 0.0041 | — |
 
 Per-objective best (dt ok), random → evolved: g1neg structure 0.158 → 0.170, temporal
 0.353 → 0.376; g1pos structure 0.027 → 0.115, temporal 0.475 → 0.607. Observations:
@@ -67,6 +69,16 @@ Per-objective best (dt ok), random → evolved: g1neg structure 0.158 → 0.170,
   the project (0.395) and beat the ES, because Gaussian mutation in z destroys the
   prior's positive-semidefinite `W_nb`; at equal physics the prone prior beats the
   Gaussian prior (HV 0.0107 vs 0.0031, best structure 0.395 vs 0.041).
+- tied: `tied_rule` draws (nb1 ~ U[1,4], β ~ U[0.3,0.5]) give structure up to 0.994 vs
+  0.042 for `random_rule` at equal physics and budget (HV 0.091 vs 0.004); NSGA raises HV
+  to 0.113 by spreading toward temporal/recovery, while its population median structure
+  falls from 0.32 (gen 0) to 0.00 (gen 1–4).
+- **Does evolution break the tie?** Yes, at once and toward the wrong side
+  (`results/evolve-tied-tie.json`): residual |Wnb2 + βWnb|/|Wnb2| goes 0 → 0.56 (gen 1) →
+  0.77 (gen 4), fitted β drifts 0.41 → 0.31, and sym(Wnb) loses positive definiteness
+  (median min eigenvalue +0.018 → −0.5); measured λ shrinks 5.0 → 3.2 and the dt-ok
+  fraction drops 0.94 → 0.72. Unstructured mutation in z cannot stay on the tied manifold;
+  this is mutation geometry, not evidence that selection prefers untied rules.
 - One seed per arm; the differences above are machine measurements on that seed.
 
 ## Trade-offs (Pearson over each run's archive)
@@ -88,18 +100,34 @@ memory_h +0.95 under the prone prior (activity slaved to material).
   Turing recipes (turing-10) patterns, and at the predicted wavelength (4.2 predicted, 4.4
   measured, structure 0.33). The rest score ≈ 0.
 - As a prior, the analysis is a strong lever: the prone sampler raised best structure ten-fold.
+- Two-shell (tied runs): growth rates are fast (Turing λ_max quartiles 0.25/0.58/1.13 per
+  unit time) and the prediction holds: Turing-classified rules have mean structure 0.456
+  (66% > 0.1) vs 0.209 (35%) for stable and 0.005 for grid-scale ones, and for the 100
+  structured Turing rules measured/predicted wavelength has quartiles 0.98 / 1.02 / 1.06.
+  Spearman against max Re λ is ≈ 0 (grid-scale rules have the largest λ and no structure):
+  the class and k*, not the growth rate, are what predict.
 
-## The evolved recipes (`recipes/evolved-*.toml`, explicit θ, all `stable_dt` ≥ 0.27 > dt)
+## Evolved recipes (`recipes/evolved-*.toml`, explicit θ, every `stable_dt` > its dt)
 
+Seed-2 rechecks in parentheses. tied-* need the two-shell step; the rest are one-ring.
 | recipe | structure | temporal | memory_h | recovery | persistence | mean_s |
 |---|---|---|---|---|---|---|
+| tied-structure | 0.994 (0.995) | 0.02 | 0.98 | 0.69 | 1.00 | 0.37 |
+| tied-balanced | 0.93 (0.93) | 0.30 | 0.44 | 0.66 | 1.00 | 0.34 |
 | prone-structure | 0.395 (seed 2: 0.388) | 0.05 | 1.00 | 0.53 | 1.00 | 0.23 |
 | prone-nsga-structure | 0.177 (0.178) | 0.04 | 0.99 | 0.41 | 1.00 | 0.27 |
 | g1neg-balanced | 0.170 (0.194) | 0.31 | 0.84 | 0.85 | 0.99 | 0.46 |
 | g1neg-temporal | 0.000 | 0.38 | 0.31 | 0.83 | 1.00 | 0.44 |
 | g1pos-temporal | 0.000 | 0.61 | −0.33 | 0.83 | 0.90 | 0.58 |
 
-prone-structure, observed: a near-binary solid (std_s 0.30 at mean 0.23) arranged in
+tied-structure, observed (predicted k* wavelength 5.32): a lateral lattice of solid with
+period 5.3–5.7 cells, contrast std_s 0.07–0.13 around mean 0.37, static activity that
+re-forms from the material after reset (memory_h 0.98). At 128³ (t = 150) the same
+period (5.3–5.5) runs through all 128 layers, from mean_s 0.38 under the light to 0.17
+on the dark floor; whole-volume structure 0.987, mass drift −6e-8. At 128×128×24 the
+structure is 0.986 with 13% of voxels above 0.5.
+
+prone-structure (one-ring), observed: a near-binary solid (std_s 0.30 at mean 0.23) arranged in
 lateral domains ~7–14 cells across; activity is static (temporal 0.05) and fully re-forms
 from the material after reset (memory_h 1.0): the material holds the pattern. At
 128×128×24 (t = 300) it keeps the texture (structure 0.49, λ 6.7, mean_s 0.31, std 0.44,
@@ -112,9 +140,10 @@ with broadband activity; g1pos-temporal's activity does not re-form after reset 
 
 ## Limits
 
-32×32×24, t = 100 per evaluation: slow instabilities (most Turing-classified rules) cannot
+32×32×24, t = 100 per evaluation (t = 50 for tied): slow instabilities (most Turing-classified rules) cannot
 show. One world seed in search (seed 2 rechecks only the recipes). dt 0.1 fixed; one
 Physics per run; α_s 0.5 (g1 runs) vs 0.05 (prone/lowmass) are different light regimes.
-Budget ≈ 1350 evaluations total, ~5 s each at 4 concurrent Metal worlds (no WorldBatch).
+Budget ≈ 1830 evaluations: ~5 s each at 4 concurrent Metal worlds, ~2 s each with
+`evaluate_batch` (WorldBatch, 32 worlds per launch; tested equal to the per-world path).
 Structure measures lateral texture only; recovery is phase-free; temporal entropy
 cannot tell chaos from noise. These are machine measurements of a field, not claims of life.

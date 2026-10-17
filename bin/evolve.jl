@@ -7,7 +7,7 @@
 # seeds, physics, eval config, objectives, diagnostics, wall time), results/evolve-<run>.json
 # (command, hypervolume and per-objective best per mode, Pareto front) and, for the nsga
 # mode, recipes/evolved-<run>-<objective>.toml for the front's best rule on each objective.
-using Intmat2, KernelAbstractions, Random, Statistics, Printf
+using Intmat2, KernelAbstractions, Random, Statistics, Printf, LinearAlgebra
 using Intmat2: EvalConfig, evolve, evaluate, hypervolume, nondominated_rank, objvec,
     SELECT_OBJECTIVES, ALL_OBJECTIVES, write_recipe, read_recipe
 
@@ -21,6 +21,8 @@ function parse_args(args)
     d
 end
 const A = parse_args(ARGS)
+"Channels C of a θ of length 2C²+8C (one ring) or 3C²+8C (two shells)."
+infer_C(n) = something(findfirst(C -> n in (2C * C + 8C, 3C * C + 8C), 1:64), 0)
 arg(k, default) = haskey(A, k) ? (default isa String ? A[k] : parse(typeof(default), A[k])) : default
 
 
@@ -39,7 +41,7 @@ if haskey(A, "correlate")
             ph = match(r"\"physics\":\{([^}]*)\}", line)[1]
             pd = Dict(Symbol(strip(k, '"')) => parse(Float64, v) for (k, v) in (split(kv, ":") for kv in split(ph, ",")))
             p64 = Physics{Float64}(; pd...)
-            C = round(Int, (-8 + sqrt(64 + 8length(θ))) / 4)
+            C = infer_C(length(θ))
             rule = Rule{C,Float64}(θ)
             ss = steady_state(rule, p64; M=numfield(line, "n0"), depth=1)
             d = ss.converged ? dispersion(rule, p64, ss) : nothing
@@ -127,9 +129,9 @@ end
 if haskey(A, "init-turing")
     @eval using Intmat2.Analysis: steady_state, dispersion, classify
     K = parse(Int, A["init-turing"]); rng2 = MersenneTwister(seed + 1); p64 = Physics{Float64}(p)
-    found = Vector{Float64}[]; tries = 0
+    found = Vector{Float64}[]; global tries = 0
     while length(found) < K && tries < 20000
-        tries += 1
+        global tries += 1
         rule = random_rule(rng2, C, Float64; scales...)
         ss = Base.invokelatest(steady_state, rule, p64; M=cfg.n0, depth=1)
         ss.converged || continue
@@ -189,7 +191,7 @@ if haskey(A, "recipe")
         ph = match(r"\"physics\":\{([^}]*)\}", line)[1]
         pd = Dict(Symbol(strip(k, '"')) => parse(Float32, v) for (k, v) in (split(kv, ":") for kv in split(ph, ",")))
         pr = Physics{Float32}(; pd...)
-        Cr = round(Int, (-8 + sqrt(64 + 8length(θ))) / 4)
+        Cr = infer_C(length(θ))
         obj = Dict{Symbol,Float64}()
         for k in (ALL_OBJECTIVES..., :mean_s, :std_s, :struct_rms, :lambda, :photic)
             m = match(Regex("\"$k\":(-?[0-9.eE+-]+)"), line)
@@ -255,6 +257,34 @@ if haskey(A, "hv")
     end
     open(io -> println(io, js((command=cmd, commit=commit, objectives=SELECT_OBJECTIVES, rows=rows))),
          joinpath(outdir, "evolve-$(get(A, "out", "hv"))-hv.json"), "w")
+    exit(0)
+end
+
+# --- tie mode: does evolution keep Wnb2 = −β·Wnb? per generation, median fitted β,
+# residual |Wnb2 + β Wnb|/|Wnb2|, min eigenvalue of sym(Wnb), and |Wnb|
+#   --tie results/evolve-tied-random.jsonl,results/evolve-tied-nsga.jsonl --out tied
+if haskey(A, "tie")
+    rows = Any[]
+    for f in split(A["tie"], ",")
+        bygen = Dict{Int,Vector{NTuple{4,Float64}}}()
+        for line in eachline(f)
+            θ = parse.(Float64, split(match(r"\"theta\":\[([^\]]*)\]", line)[1], ","))
+            g = parse(Int, match(r"\"gen\":(\d+)", line)[1])
+            r = Rule{C,Float64}(θ)
+            W = Matrix(r.Wnb); W2 = Matrix(r.Wnb2)
+            β = -sum(W .* W2) / sum(abs2, W)
+            res = norm(W2 + β * W) / max(norm(W2), 1e-12)
+            push!(get!(bygen, g, NTuple{4,Float64}[]), (β, res, minimum(eigvals(Symmetric((W + W') / 2))), norm(W)))
+        end
+        for g in sort(collect(keys(bygen)))
+            v = bygen[g]
+            row = (archive=basename(f), gen=g, beta=median(first.(v)), resid=median(getindex.(v, 2)),
+                   min_eig_Wnb=median(getindex.(v, 3)), norm_Wnb=median(last.(v)))
+            push!(rows, row)
+            @printf("%-26s gen %d  β %.3f  resid %.3f  min eig sym(Wnb) %+.3f  |Wnb| %.2f\n", row.archive, g, row.beta, row.resid, row.min_eig_Wnb, row.norm_Wnb)
+        end
+    end
+    open(io -> println(io, js((command=cmd, commit=commit, rows=rows))), joinpath(outdir, "evolve-$(get(A, "out", "tie"))-tie.json"), "w")
     exit(0)
 end
 

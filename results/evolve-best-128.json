@@ -2,7 +2,7 @@
  "recipe": "recipes/evolved-prone-structure.toml",
  "step_code": "one-ring (Wnb2 inert), commit after eedce48",
  "runs": {
-  "128x128x128": {
+  "prone-structure 128x128x128": {
    "command": "julia --project=env/metal bin/run.jl recipes/evolved-prone-structure.toml outputs/d/prone-structure-128 N=128 steps=3000 capture_every=500",
    "summaries": [
     {
@@ -101,7 +101,7 @@
     "note": "textured canopy in top ~40 layers; below k~85 mean_s~0.01-0.02 uniform"
    }
   },
-  "128x128x24": {
+  "prone-structure 128x128x24": {
    "command": "julia --project=env/metal bin/run.jl <recipe with dims=[128,128,24]> outputs/d/prone-structure-128x24 steps=3000 capture_every=1000",
    "summaries": [
     {
@@ -162,6 +162,168 @@
     "lambda_top": 5.8,
     "photic": 1.0
    }
+  },
+  "tied-structure 128x128x128": {
+   "command": "julia --project=env/metal bin/run.jl recipes/evolved-tied-structure.toml outputs/d/tied-structure-128 N=128 steps=3000 capture_every=500",
+   "summaries": [
+    {
+     "step": 0.0,
+     "t": 0.0,
+     "mean_s": 0.0,
+     "std_s": 0.0,
+     "solid>.5": 0.0,
+     "n": 0.5,
+     "w": 0.0,
+     "|h|": 0.08,
+     "L_bottom": 0.0017,
+     "dmass": 0.0
+    },
+    {
+     "step": 500.0,
+     "t": 25.0,
+     "mean_s": 0.3788,
+     "std_s": 0.0331,
+     "solid>.5": 0.0,
+     "n": 0.0692,
+     "w": 0.052,
+     "|h|": 0.395,
+     "L_bottom": 0.0002,
+     "dmass": -5.22e-08
+    },
+    {
+     "step": 1000.0,
+     "t": 50.0,
+     "mean_s": 0.3637,
+     "std_s": 0.0514,
+     "solid>.5": 0.004,
+     "n": 0.0214,
+     "w": 0.115,
+     "|h|": 0.396,
+     "L_bottom": 0.0003,
+     "dmass": -8.57e-08
+    },
+    {
+     "step": 1500.0,
+     "t": 75.0,
+     "mean_s": 0.3182,
+     "std_s": 0.0647,
+     "solid>.5": 0.009,
+     "n": 0.0141,
+     "w": 0.1676,
+     "|h|": 0.421,
+     "L_bottom": 0.0005,
+     "dmass": -4.84e-08
+    },
+    {
+     "step": 2000.0,
+     "t": 100.0,
+     "mean_s": 0.2782,
+     "std_s": 0.0769,
+     "solid>.5": 0.015,
+     "n": 0.0138,
+     "w": 0.208,
+     "|h|": 0.436,
+     "L_bottom": 0.0006,
+     "dmass": -8.75e-08
+    },
+    {
+     "step": 2500.0,
+     "t": 125.0,
+     "mean_s": 0.2467,
+     "std_s": 0.0885,
+     "solid>.5": 0.019,
+     "n": 0.0146,
+     "w": 0.2387,
+     "|h|": 0.446,
+     "L_bottom": 0.0007,
+     "dmass": -5.03e-08
+    },
+    {
+     "step": 3000.0,
+     "t": 150.0,
+     "mean_s": 0.2225,
+     "std_s": 0.099,
+     "solid>.5": 0.023,
+     "n": 0.0153,
+     "w": 0.2621,
+     "|h|": 0.451,
+     "L_bottom": 0.0009,
+     "dmass": -5.96e-08
+    }
+   ],
+   "final_objectives": {
+    "structure": 0.987,
+    "struct_frac": 0.989,
+    "struct_rms": 0.077,
+    "lambda": 5.3,
+    "structure_top": 0.983,
+    "lambda_top": 5.5,
+    "photic": 0.32,
+    "note": "lateral period 5.3-5.5 at every depth; mean_s 0.38 at top to 0.17 at the floor"
+   }
+  },
+  "tied-structure 128x128x24": {
+   "command": "julia --project=env/metal bin/run.jl <recipe with dims=[128,128,24]> outputs/d/tied-structure-128x24 steps=3000 capture_every=1000",
+   "summaries": [
+    {
+     "step": 0.0,
+     "t": 0.0,
+     "mean_s": 0.0,
+     "std_s": 0.0,
+     "solid>.5": 0.0,
+     "n": 0.5,
+     "w": 0.0,
+     "|h|": 0.08,
+     "L_bottom": 0.3088,
+     "dmass": 0.0
+    },
+    {
+     "step": 1000.0,
+     "t": 50.0,
+     "mean_s": 0.3691,
+     "std_s": 0.0739,
+     "solid>.5": 0.022,
+     "n": 0.0416,
+     "w": 0.0893,
+     "|h|": 0.415,
+     "L_bottom": 0.2492,
+     "dmass": 9.93e-09
+    },
+    {
+     "step": 2000.0,
+     "t": 100.0,
+     "mean_s": 0.3416,
+     "std_s": 0.1039,
+     "solid>.5": 0.081,
+     "n": 0.0445,
+     "w": 0.1139,
+     "|h|": 0.432,
+     "L_bottom": 0.2588,
+     "dmass": -9.93e-09
+    },
+    {
+     "step": 3000.0,
+     "t": 150.0,
+     "mean_s": 0.3355,
+     "std_s": 0.1242,
+     "solid>.5": 0.128,
+     "n": 0.0472,
+     "w": 0.1172,
+     "|h|": 0.439,
+     "L_bottom": 0.2614,
+     "dmass": -5.96e-08
+    }
+   ],
+   "final_objectives": {
+    "structure": 0.986,
+    "struct_frac": 0.989,
+    "struct_rms": 0.122,
+    "lambda": 5.3,
+    "structure_top": 0.983,
+    "lambda_top": 5.5,
+    "photic": 1.0
+   }
   }
- }
+ },
+ "note": "prone-structure: one-ring step; tied-structure: two-shell step (69b4888+). Commands below."
 }
