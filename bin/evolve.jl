@@ -114,6 +114,10 @@ if arg("prior", "gauss") == "prone"     # lane A's Turing-prone sampler (Analysi
     @eval using Intmat2.Analysis: turing_prone_rule
     sampler = rng -> vec(Base.invokelatest(turing_prone_rule, rng, C, Float64))
 end
+if arg("prior", "gauss") == "tied"     # two-shell tied rules, nb1 ~ U[1,4], beta ~ U[0.3,0.5]
+    sampler = rng -> vec(Intmat2.tied_rule(rng, C, Float64; nb1=1 + 3rand(rng), beta=0.3 + 0.2rand(rng)))
+    haskey(A, "scales") || (scales = (nb=2.5, nb2=2.5))   # Wnb2 mutated on the Wnb scale
+end
 init = nothing
 if haskey(A, "init")      # comma-separated recipe files whose θ seed the first population
     init = [Float64.(vec(read_recipe(f)[1])) for f in split(A["init"], ",")]
@@ -159,7 +163,9 @@ if haskey(A, "eval-recipes")
     rows = Any[]
     for f in split(A["eval-recipes"], ",")
         rule, pr, d = read_recipe(f)
-        r = evaluate([rule], pr, cfg)[1]
+        cfgr = EvalConfig(dims=cfg.dims, T=cfg.T, cont=cfg.cont, seed=cfg.seed, n0=Float64(get(d, "n0", cfg.n0)),
+                          h_scale=Float64(get(d, "h_scale", cfg.h_scale)), backend=cfg.backend)
+        r = evaluate([rule], pr, cfgr)[1]
         pred = get(d, "predicted", Dict())
         push!(rows, (recipe=basename(f), class=get(pred, "class", ""), lambda_max=get(pred, "lambda_max", NaN),
                      wavelength=get(pred, "wavelength", NaN), physics=pr, theta=Float64.(vec(rule)), res=r))

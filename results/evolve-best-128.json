@@ -1,0 +1,167 @@
+{
+ "recipe": "recipes/evolved-prone-structure.toml",
+ "step_code": "one-ring (Wnb2 inert), commit after eedce48",
+ "runs": {
+  "128x128x128": {
+   "command": "julia --project=env/metal bin/run.jl recipes/evolved-prone-structure.toml outputs/d/prone-structure-128 N=128 steps=3000 capture_every=500",
+   "summaries": [
+    {
+     "step": 0.0,
+     "t": 0.0,
+     "mean_s": 0.0,
+     "std_s": 0.0,
+     "solid>.5": 0.0,
+     "n": 0.5,
+     "w": 0.0,
+     "|h|": 0.08,
+     "L_bottom": 0.0017,
+     "dmass": 0.0
+    },
+    {
+     "step": 500.0,
+     "t": 50.0,
+     "mean_s": 0.1123,
+     "std_s": 0.1075,
+     "solid>.5": 0.022,
+     "n": 0.3028,
+     "w": 0.0849,
+     "|h|": 0.449,
+     "L_bottom": 0.0829,
+     "dmass": -4.47e-08
+    },
+    {
+     "step": 1000.0,
+     "t": 100.0,
+     "mean_s": 0.0674,
+     "std_s": 0.1568,
+     "solid>.5": 0.043,
+     "n": 0.3246,
+     "w": 0.108,
+     "|h|": 0.458,
+     "L_bottom": 0.1496,
+     "dmass": -2.98e-08
+    },
+    {
+     "step": 1500.0,
+     "t": 150.0,
+     "mean_s": 0.0684,
+     "std_s": 0.1972,
+     "solid>.5": 0.053,
+     "n": 0.3393,
+     "w": 0.0922,
+     "|h|": 0.458,
+     "L_bottom": 0.1069,
+     "dmass": -8.94e-08
+    },
+    {
+     "step": 2000.0,
+     "t": 200.0,
+     "mean_s": 0.0746,
+     "std_s": 0.2177,
+     "solid>.5": 0.06,
+     "n": 0.3371,
+     "w": 0.0883,
+     "|h|": 0.461,
+     "L_bottom": 0.0927,
+     "dmass": -2.24e-07
+    },
+    {
+     "step": 2500.0,
+     "t": 250.01,
+     "mean_s": 0.0791,
+     "std_s": 0.2315,
+     "solid>.5": 0.065,
+     "n": 0.3328,
+     "w": 0.088,
+     "|h|": 0.464,
+     "L_bottom": 0.087,
+     "dmass": -4.92e-07
+    },
+    {
+     "step": 3000.0,
+     "t": 300.01,
+     "mean_s": 0.0827,
+     "std_s": 0.2417,
+     "solid>.5": 0.07,
+     "n": 0.3293,
+     "w": 0.088,
+     "|h|": 0.466,
+     "L_bottom": 0.083,
+     "dmass": -1.04e-06
+    }
+   ],
+   "final_objectives": {
+    "structure": 0.52,
+    "struct_frac": 0.608,
+    "struct_rms": 0.204,
+    "lambda": 13.0,
+    "structure_top": 0.219,
+    "lambda_top": 7.2,
+    "photic": 0.79,
+    "note": "textured canopy in top ~40 layers; below k~85 mean_s~0.01-0.02 uniform"
+   }
+  },
+  "128x128x24": {
+   "command": "julia --project=env/metal bin/run.jl <recipe with dims=[128,128,24]> outputs/d/prone-structure-128x24 steps=3000 capture_every=1000",
+   "summaries": [
+    {
+     "step": 0.0,
+     "t": 0.0,
+     "mean_s": 0.0,
+     "std_s": 0.0,
+     "solid>.5": 0.0,
+     "n": 0.5,
+     "w": 0.0,
+     "|h|": 0.08,
+     "L_bottom": 0.3097,
+     "dmass": 0.0
+    },
+    {
+     "step": 1000.0,
+     "t": 100.0,
+     "mean_s": 0.2278,
+     "std_s": 0.3048,
+     "solid>.5": 0.219,
+     "n": 0.1738,
+     "w": 0.0985,
+     "|h|": 0.505,
+     "L_bottom": 0.4931,
+     "dmass": -3.97e-08
+    },
+    {
+     "step": 2000.0,
+     "t": 200.0,
+     "mean_s": 0.284,
+     "std_s": 0.414,
+     "solid>.5": 0.287,
+     "n": 0.184,
+     "w": 0.032,
+     "|h|": 0.522,
+     "L_bottom": 0.3396,
+     "dmass": -5.46e-08
+    },
+    {
+     "step": 3000.0,
+     "t": 300.01,
+     "mean_s": 0.3115,
+     "std_s": 0.4388,
+     "solid>.5": 0.314,
+     "n": 0.1669,
+     "w": 0.0216,
+     "|h|": 0.535,
+     "L_bottom": 0.3096,
+     "dmass": -1.55e-06
+    }
+   ],
+   "final_objectives": {
+    "structure": 0.488,
+    "struct_frac": 0.582,
+    "struct_rms": 0.416,
+    "lambda": 6.7,
+    "structure_top": 0.214,
+    "lambda_top": 5.8,
+    "photic": 1.0
+   }
+  }
+ }
+}
