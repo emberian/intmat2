@@ -5,7 +5,8 @@ using Intmat2: run!, light!
 const KA = KernelAbstractions
 
 gate_rule(T=Float32) = random_rule(MersenneTwister(1), 8, T; self=1.0, nb=1.0)
-gate_physics(T=Float32) = Physics{T}()
+# Pinned to the 09d1bd7 defaults the reference was made with (alpha defaults changed since).
+gate_physics(T=Float32) = Physics{T}(alpha_s=2.0, alpha_p=2.0)
 gate_world(be, N; T=Float32, seed=3) =
     World(be, gate_rule(T), (N, N, N); T=T, h_scale=0.3, s0=0.3, seed=seed)
 
