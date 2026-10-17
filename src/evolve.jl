@@ -504,7 +504,7 @@ population; cached individuals still count toward the evaluation budget. Returns
 function evolve(C::Integer, p::Physics{T}, cfg; mode=:nsga, pop=48, gens=8, seed=1,
                 sigma0=0.3, init=nothing, eval=evaluate, objectives=SELECT_OBJECTIVES,
                 log=rec -> nothing, cache=Dict{Vector{Float64},Any}(), scales=(;), sampler=nothing,
-                space=nothing) where {T}
+                space=nothing, init_z=nothing) where {T}
     rng = MersenneTwister(seed)
     if space === nothing           # z = θ ./ scale in the flat rule layout
         scale = rule_scale(C; scales...); np = length(scale); blocks = rule_blocks(C, np)
@@ -538,6 +538,12 @@ function evolve(C::Integer, p::Physics{T}, cfg; mode=:nsga, pop=48, gens=8, seed
         length(archive)-length(res)+1:length(archive)
     end
     z0 = [draw() for _ in 1:pop]
+    if init_z !== nothing             # seeds given directly in search coordinates
+        for (i, z) in enumerate(init_z[1:min(end, pop)])
+            length(z) == np || throw(ArgumentError("init_z[$i] has length $(length(z)), space needs $np"))
+            z0[i] = fix!(copy(Float64.(z)))
+        end
+    end
     if init !== nothing
         for (i, θ) in enumerate(init[1:min(end, pop)])
             z0[i] = θ_to_z(θ, scale)
@@ -745,7 +751,7 @@ Components of consecutive captures are linked when they share a voxel. A new com
 with no predecessor is a birth, an old one with no successor a death; an old one with k ≥ 2
 successors counts k−1 splits, a new one with k ≥ 2 predecessors k−1 merges.
 `inherit[j]` is the old label that new component j continues (mutual largest overlap),
-or 0 (a new identity).
+or 0 (a new identity); `parent[j]` its largest-overlap predecessor (0 = a birth).
 """
 function track(prev::AbstractArray{Int32,3}, next::AbstractArray{Int32,3})
     Kp = maximum(prev; init=Int32(0)); Kn = maximum(next; init=Int32(0))
@@ -763,11 +769,77 @@ function track(prev::AbstractArray{Int32,3}, next::AbstractArray{Int32,3})
     end
     inherit = [bestp[j] > 0 && bests[bestp[j]] == j ? bestp[j] : Int32(0) for j in 1:Kn]
     (births=count(==(0), npred), deaths=count(==(0), nsucc),
-     splits=sum(max.(nsucc .- 1, 0); init=0), merges=sum(max.(npred .- 1, 0); init=0), inherit=inherit)
+     splits=sum(max.(nsucc .- 1, 0); init=0), merges=sum(max.(npred .- 1, 0); init=0), inherit=inherit,
+     parent=bestp)
+end
+
+"""Occupied extent on a ring of `N` cells: `N` minus the largest circular empty gap."""
+function ring_extent(occ::AbstractVector{Bool})
+    N = length(occ); any(occ) || return 0
+    gap = run = 0
+    for i in 1:2N
+        occ[mod1(i, N)] ? (run = 0) : (run += 1; gap = max(gap, run))
+    end
+    N - min(gap, N)
+end
+
+"""
+    region_shapes(lab, sizes; reach=2) -> (isolation, largest_share, median_size)
+
+Per region: compactness = volume / bounding-box volume (x, y extents on the periodic
+ring, z plain; a region that wraps the periodic box in x or y scores 0), times `1 −` the fraction of its surface voxels that have a voxel of a
+*different* region within `reach` cells (Chebyshev, periodic x, y). `isolation` is the
+volume-weighted mean over regions: high when most solid sits in compact, separated
+bodies; a lattice or sponge (one region spanning the box, bounding box = box) scores ≈ 0,
+and crumbs packed against each other are discounted by the contact term.
+"""
+function region_shapes(lab::AbstractArray{Int32,3}, sizes; reach::Integer=2)
+    K = length(sizes)
+    K == 0 && return (isolation=0.0, largest_share=1.0, median_size=0.0)
+    Nx, Ny, Nz = size(lab)
+    ox = falses(Nx, K); oy = falses(Ny, K); zlo = fill(Nz + 1, K); zhi = zeros(Int, K)
+    surf = zeros(Int, K); touch = zeros(Int, K)
+    @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
+        l = lab[i, j, k]; l == 0 && continue
+        ox[i, l] = true; oy[j, l] = true; zlo[l] = min(zlo[l], k); zhi[l] = max(zhi[l], k)
+        issurf = lab[mod1(i + 1, Nx), j, k] != l || lab[mod1(i - 1, Nx), j, k] != l ||
+                 lab[i, mod1(j + 1, Ny), k] != l || lab[i, mod1(j - 1, Ny), k] != l ||
+                 (k < Nz && lab[i, j, k+1] != l) || (k > 1 && lab[i, j, k-1] != l)
+        issurf || continue
+        surf[l] += 1
+        hit = false
+        for dk in -reach:reach
+            kk = k + dk; (1 <= kk <= Nz) || continue
+            for dj in -reach:reach, di in -reach:reach
+                m = lab[mod1(i + di, Nx), mod1(j + dj, Ny), kk]
+                if m != 0 && m != l
+                    hit = true; break
+                end
+            end
+            hit && break
+        end
+        hit && (touch[l] += 1)
+    end
+    iso = 0.0
+    for l in 1:K
+        ex = ring_extent(view(ox, :, l)); ey = ring_extent(view(oy, :, l))
+        (ex == Nx || ey == Ny) && continue        # wraps the periodic box: a sheet or network, not a body
+        box = ex * ey * (zhi[l] - zlo[l] + 1)
+        c = sizes[l] / max(box, 1)
+        iso += sizes[l] * c * (1 - (surf[l] > 0 ? touch[l] / surf[l] : 0.0))
+    end
+    tot = sum(sizes)
+    (isolation=iso / tot, largest_share=maximum(sizes) / tot, median_size=Float64(median(sizes)))
 end
 
 """
     life_objectives(caps, cap_dt; min_size=8, cell=8, rate_target=0.1) -> NamedTuple
+
+- `fragmentation` = mean over captures of `1 − largest region / all region voxels`, times
+  `min(1, median region size / 27)`: one giant network → 0, a field of 1–2-voxel-thick
+  crumbs is discounted, many comparable bodies of ≥ 3³ voxels → near 1. (Not `4x(1−x)`:
+  that would score a population of equal bodies, the target, as low as dust.)
+- `isolation` = mean over captures of `region_shapes(...).isolation`.
 
 From a time series of solid fields `caps` (equally spaced by `cap_dt`), regions = 6-connected
 components (periodic x,y) of `region_mask`, ≥ `min_size` voxels, tracked by overlap.
@@ -782,8 +854,10 @@ components (periodic x,y) of `region_mask`, ≥ `min_size` voxels, tracked by ov
 """
 function life_objectives(caps::AbstractVector{<:AbstractArray{<:Real,3}}, cap_dt;
                          min_size=8, cell=8, rate_target=0.1)
-    labs = [label_components(region_mask(c); min_size)[1] for c in caps]
+    lz = [label_components(region_mask(c); min_size) for c in caps]
+    labs = first.(lz)
     counts = [Int(maximum(l; init=Int32(0))) for l in labs]
+    shp = [region_shapes(l, sz) for (l, sz) in lz]
     nb = nd = nsp = nm = 0
     first_seen = Dict{Int,Int}(); last_seen = Dict{Int,Int}()
     ident = [Int[] for _ in labs]; nextid = 0
@@ -828,16 +902,22 @@ function life_objectives(caps::AbstractVector{<:AbstractArray{<:Real,3}}, cap_dt
     sd = sum(d)
     PR = sd > 1e-20 ? sd^2 / (length(d) * sum(abs2, d)) : 1.0
     rms = sqrt(sd / length(d))
+    xf = mean(sh.median_size > 0 ? 1 - sh.largest_share : 0.0 for sh in shp)
+    medsz = median([sh.median_size for sh in shp])
     (population=4x * (1 - x), turnover=4y * (1 - y), lifetime_spread=spread,
      localization=(1 - PR) * min(1.0, rms / 0.05),
+     fragmentation=xf * min(1.0, medsz / 27), isolation=mean(sh.isolation for sh in shp),
+     largest_share=1 - xf, median_size=medsz,
      n_regions=μc, n_regions_last=counts[end], births=nb, deaths=nd, splits=nsp, merges=nm,
      event_rate=r, participation=PR, n_identities=length(lt))
 end
 
 "Selection set for region-shaped behaviour."
-const LIFE_SELECT = (:localization, :population, :turnover, :temporal, :recovery)
+const LIFE_SELECT = (:fragmentation, :isolation, :turnover, :temporal, :recovery)
+"The first region selection set (archives life-n05/n03): kept for re-scoring them."
+const LIFE_SELECT_V1 = (:localization, :population, :turnover, :temporal, :recovery)
 "All objectives recorded by `evaluate_life`."
-const LIFE_OBJECTIVES = (:localization, :population, :turnover, :lifetime_spread, :temporal,
+const LIFE_OBJECTIVES = (:fragmentation, :isolation, :localization, :population, :turnover, :lifetime_spread, :temporal,
                          :memory_h, :recovery, :persistence, :structure)
 
 """
@@ -960,7 +1040,8 @@ function life_group(rules::AbstractVector{<:Rule{C,T}}, p::Physics{T}, cfg::Life
         fin = all(isfinite, s_end) && all(isfinite, sc) && all(isfinite, hc) && all(isfinite, hp)
         tm = temporal(probes[:, :, :, b])
         st = structure(s_end)
-        obj = fin ? (localization=lf.localization, population=lf.population, turnover=lf.turnover,
+        obj = fin ? (fragmentation=lf.fragmentation, isolation=lf.isolation,
+                     localization=lf.localization, population=lf.population, turnover=lf.turnover,
                      lifetime_spread=lf.lifetime_spread, temporal=tm.score,
                      memory_h=corr0(hc, hp), recovery=recovery(sc, se, starts[b][4], s_end),
                      persistence=persistence(trace), structure=st.score) :
@@ -969,7 +1050,7 @@ function life_group(rules::AbstractVector{<:Rule{C,T}}, p::Physics{T}, cfg::Life
                 std_s=trace[end].std_s, light_bottom=trace[end].light_bottom,
                 mass_drift=(m1[b] - m0[b]) / nv, lambda=st.lambda, n_regions=lf.n_regions,
                 n_regions_last=lf.n_regions_last, births=lf.births, deaths=lf.deaths, splits=lf.splits,
-                merges=lf.merges, event_rate=lf.event_rate, participation=lf.participation,
+                merges=lf.merges, event_rate=lf.event_rate, largest_share=lf.largest_share, median_size=lf.median_size, participation=lf.participation,
                 n_identities=lf.n_identities, t_fixed=tm.fixed, t_periodic=tm.periodic,
                 h_autocorr=corr0(hH[:, :, :, :, b], hc), finite=fin, wall=time() - t0)
         merge(map(x -> isfinite(x) ? x : 0.0, obj), diag)

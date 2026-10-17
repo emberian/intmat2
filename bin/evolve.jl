@@ -303,6 +303,18 @@ if haskey(A, "life")
     space = spname == "flat" ? nothing :
         TiedSpace(C; untied=spname == "untied", nb1=(arg("nb1_lo", 1.0), arg("nb1_hi", 16.0)),
                   beta=(arg("beta_lo", 0.28), arg("beta_hi", 0.5)))
+    # --seed_from file.jsonl:id --seed_n 16 --seed_sigma 0.3: that rule's z plus seed_n−1
+    # Gaussian perturbations of it seed the nsga population (untied D block padded with 0)
+    init_z = nothing
+    if haskey(A, "seed_from")
+        f, id = split(A["seed_from"], ":")
+        line = first(l for l in eachline(f) if occursin("\"id\":$id,", l))
+        z = parse.(Float64, split(match(r"\"z\":\[([^\]]*)\]", line)[1], ","))
+        np_ = length(Intmat2.space_scale(space))
+        z = vcat(z, zeros(np_ - length(z)))
+        zr = MersenneTwister(seed + 2)
+        init_z = [i == 1 ? z : z .+ arg("seed_sigma", 0.3) .* randn(zr, length(z)) for i in 1:arg("seed_n", 16)]
+    end
     lnt = (dims=lcfg.dims, t_main=lcfg.t_main, t_cont=lcfg.t_cont, cap_dt=lcfg.cap_dt, track_from=lcfg.track_from,
            world_seed=lcfg.seed, n0=lcfg.n0, h_scale=lcfg.h_scale, dt_max=lcfg.dt_max, dt_min=lcfg.dt_min,
            dt_safety=lcfg.dt_safety, min_size=lcfg.min_size, cell=lcfg.cell, backend=backend_name, C=C, space=spname)
@@ -326,7 +338,7 @@ if haskey(A, "life")
             end
         end
         arch, P = evolve(C, p, lcfg; mode=mode, pop=pop, gens=gens, seed=seed, log=logf, space=space,
-                         eval=evaluate_life, objectives=LIFE_SELECT)
+                         eval=evaluate_life, objectives=LIFE_SELECT, init_z=mode == :nsga ? init_z : nothing)
         close(io)
         F = reduce(hcat, [objvec(a.res, LIFE_SELECT) for a in arch])
         front = findall(==(1), nondominated_rank(F))
@@ -344,6 +356,110 @@ if haskey(A, "life")
     lsum["objective_correlation"] = Dict(string(LIFE_OBJECTIVES[i], "~", LIFE_OBJECTIVES[j]) =>
         cor(Fall[i, :], Fall[j, :]) for i in 1:length(LIFE_OBJECTIVES) for j in i+1:length(LIFE_OBJECTIVES))
     open(io -> println(io, js(lsum)), joinpath(outdir, "evolve-$run.json"), "w")
+    exit(0)
+end
+
+# --- series mode: run recipes on the GPU and keep only region statistics (no captures)
+#   --series r1.toml,r2.toml --dims 128,128,48 --t_run 300 --cap_dt 2 --late 150 --out name
+# --- identity mode: also capture h; per-region mean activity, network vs fragments
+#   --identity r.toml --dims 64,64,24 --t_run 300 --cap_dt 5 --out name
+if haskey(A, "series") || haskey(A, "identity")
+    using Intmat2: region_mask, label_components, track, life_objectives, region_shapes
+    ident_mode = haskey(A, "identity")
+    rows = Any[]
+    for f in split(ident_mode ? A["identity"] : A["series"], ",")
+        rule, pr, d = read_recipe(f)
+        Cr = Intmat2.nchannels(rule)
+        wd = World(be, rule, dims; n0=Float64(d["n0"]), h_scale=Float64(get(d, "h_scale", 0.1)), seed=Int(get(d, "seed", 1)))
+        wd = Intmat2.light!(wd, rule, pr)
+        dtr = Float64(pr.dt); every = max(1, round(Int, arg("cap_dt", 2.0) / dtr))
+        nsteps = round(Int, arg("t_run", 300.0) / dtr); late = arg("late", 150.0)
+        series = Any[]; latecaps = Array{Float64,3}[]; prevlab = nothing
+        hstats = Any[]; lineage = Dict{Int,Vector{Any}}(); prevident = Int[]; nextid = 0; prevnet = 0
+        t0 = time()
+        for st in every:every:nsteps
+            wd = Intmat2.run!(wd, rule, pr, every)
+            sh = Float64.(Array(wd.s)); t = st * dtr
+            lab, sz = label_components(region_mask(sh))
+            K = length(sz)
+            tr = prevlab === nothing ? nothing : track(prevlab, lab)
+            shp = region_shapes(lab, sz)
+            push!(series, (t=t, count=K, largest_share=shp.largest_share, isolation=shp.isolation,
+                           median_size=shp.median_size, mean_s=mean(sh),
+                           births=tr === nothing ? 0 : tr.births, deaths=tr === nothing ? 0 : tr.deaths,
+                           splits=tr === nothing ? 0 : tr.splits, merges=tr === nothing ? 0 : tr.merges))
+            t >= late - 1e-9 && push!(latecaps, sh)
+            if ident_mode && K > 0
+                h = Float64.(Array(wd.h))                       # (C, Nx, Ny, Nz)
+                net = argmax(sz)
+                sums = zeros(Cr, K); zsum = zeros(K)
+                for I in CartesianIndices(lab)
+                    l = lab[I]; l == 0 && continue
+                    sums[:, l] .+= view(h, :, I); zsum[l] += I[3]
+                end
+                means = sums ./ reshape(sz, 1, :); zc = zsum ./ sz
+                frag = [l for l in 1:K if l != net]
+                # network voxels in the fragments' depth range: the depth-matched reference
+                zlo = isempty(frag) ? 1 : floor(Int, minimum(zc[frag])); zhi = isempty(frag) ? size(lab, 3) : ceil(Int, maximum(zc[frag]))
+                nv = [view(h, :, I) for I in CartesianIndices(lab) if lab[I] == net && zlo <= I[3] <= zhi]
+                netm = isempty(nv) ? means[:, net] : mean(nv)
+                within = isempty(nv) ? NaN : sum(var([v[c] for v in nv]) for c in 1:Cr)
+                between = length(frag) >= 2 ? sum(var(means[c, frag]) for c in 1:Cr) : NaN
+                dist = [norm(means[:, l] - netm) / sqrt(within) for l in frag]
+                # identities: continue via track.inherit; record each lineage's mean h over time
+                ident = if tr === nothing
+                    nextid += K; collect(nextid-K+1:nextid)
+                else
+                    [a > 0 ? prevident[a] : (nextid += 1) for a in tr.inherit]
+                end
+                for l in frag
+                    id = ident[l]
+                    origin = tr === nothing ? :initial : (tr.inherit[l] > 0 ? :continued : (tr.parent[l] == prevnet ? :split_from_network : tr.parent[l] > 0 ? :split_from_fragment : :birth))
+                    v = get!(lineage, id, Any[])
+                    isempty(v) && push!(v, origin)
+                    push!(v, (t=t, h=means[:, l], z=norm(means[:, l] - netm) / sqrt(within)))
+                end
+                prevident = ident; prevnet = net
+                push!(hstats, (t=t, n_fragments=length(frag), within_network_var=within, between_fragment_var=between,
+                               ratio=between / within, median_fragment_distance=isempty(dist) ? NaN : median(dist),
+                               frac_fragments_beyond_2sd=isempty(dist) ? NaN : mean(dist .> 2)))
+            end
+            prevlab = lab
+        end
+        lf = life_objectives(latecaps, arg("cap_dt", 2.0))
+        row = Dict{String,Any}("recipe" => basename(f), "dims" => dims, "dt" => dtr, "t_run" => arg("t_run", 300.0),
+                               "late_from" => late, "late" => lf, "series" => series, "wall_s" => time() - t0)
+        if ident_mode
+            # lineages living ≥ 3 captures: self-similarity of the mean-h signature (first vs last)
+            # against same-time similarity between different fragments
+            cosv(a, b) = dot(a, b) / (norm(a) * norm(b) + 1e-12)
+            long = [(v[1], v[2:end]) for v in values(lineage) if length(v) >= 4]
+            selfsim = [cosv(L[1].h, L[end].h) for (_, L) in long]
+            zfirst = [L[1].z for (_, L) in long]; zlast = [L[end].z for (_, L) in long]
+            bytime = Dict{Float64,Vector{Vector{Float64}}}()
+            for v in values(lineage), e in v[2:end]
+                push!(get!(bytime, e.t, Vector{Float64}[]), e.h)
+            end
+            cross = Float64[]
+            for (_, hs) in bytime, i in 1:min(length(hs), 40), j in i+1:min(length(hs), 40)
+                push!(cross, cosv(hs[i], hs[j]))
+            end
+            origins = Dict(string(o) => count(x -> x[1] == o, long) for o in unique(first.(long)))
+            row["h"] = Dict{String,Any}("per_capture" => hstats, "n_long_lineages" => length(long),
+                "long_lineage_origins" => origins,
+                "selfsim_first_last" => isempty(selfsim) ? Float64[] : quantile(selfsim, [0.25, 0.5, 0.75]),
+                "cross_fragment_sim_same_time" => isempty(cross) ? Float64[] : quantile(cross, [0.25, 0.5, 0.75]),
+                "z_vs_network_first" => isempty(zfirst) ? Float64[] : quantile(zfirst, [0.25, 0.5, 0.75]),
+                "z_vs_network_last" => isempty(zlast) ? Float64[] : quantile(zlast, [0.25, 0.5, 0.75]))
+        end
+        push!(rows, row)
+        @printf("%s: late count %.0f, largest share %.2f, isolation %.2f, events b%d d%d s%d m%d, rate %.4f, fragmentation %.3f turnover %.3f (%.0f s)\n",
+                basename(f), lf.n_regions, lf.largest_share, lf.isolation, lf.births, lf.deaths, lf.splits, lf.merges,
+                lf.event_rate, lf.fragmentation, lf.turnover, time() - t0)
+        ident_mode && println("  h: ", row["h"])
+    end
+    open(io -> println(io, js((command=cmd, commit=commit, rows=rows))),
+         joinpath(outdir, "evolve-$(ident_mode ? "identity" : "series")-$(get(A, "out", run)).json"), "w")
     exit(0)
 end
 

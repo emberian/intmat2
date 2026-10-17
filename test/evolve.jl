@@ -116,3 +116,33 @@ end
                      space=TiedSpace(4; untied=true))
     @test length(arch) == 6
 end
+
+@testset "evolve: fragmentation and isolation" begin
+    using Intmat2: label_components, region_shapes, life_objectives, ring_extent
+    @test ring_extent(Bool[1, 0, 0, 0, 0, 0, 0, 1]) == 2 && ring_extent(trues(5)) == 5
+    # separated compact cubes: isolated, fragmented
+    s = fill(0.05, 32, 32, 12)
+    for i in (2, 12, 22), j in (2, 12, 22), k in 4:9
+        s[i:i+5, j:j+5, k] .= 0.8
+    end
+    lab, sz = label_components(s .> 0.4)
+    sh = region_shapes(lab, sz)
+    @test length(sz) == 9 && sh.isolation > 0.9 && sh.largest_share ≈ 1 / 9
+    # a lamellar lattice spanning the box: one region per sheet, bounding box = box face
+    L = [0.05 + 0.75 * (mod(i, 6) < 3) for i in 1:32, j in 1:32, k in 1:12]
+    labL, szL = label_components(L .> 0.4)
+    @test region_shapes(labL, szL).isolation == 0.0     # sheets wrap the box
+    # sponge: everything one network → fragmentation 0, isolation ≈ 0
+    sp = [0.05 + 0.75 * ((mod(i, 6) < 2) | (mod(j, 6) < 2) | (mod(k, 6) < 2)) for i in 1:32, j in 1:32, k in 1:12]
+    lo = life_objectives([sp, sp, sp], 2.0)
+    @test lo.fragmentation < 0.01 && lo.isolation < 0.05
+    lo2 = life_objectives([s, s, s], 2.0)
+    @test lo2.fragmentation > 0.85 && lo2.isolation > 0.9 && lo2.turnover == 0.0
+    # crumbs packed within 2 cells of each other lose isolation
+    c = fill(0.05, 32, 32, 12)
+    for i in 2:3:29, j in 2:3:29, k in 4:5          # 1-cell gaps
+        c[i:i+1, j:j+1, k] .= 0.8
+    end
+    labc, szc = label_components(c .> 0.4; min_size=8)
+    @test region_shapes(labc, szc).isolation < 0.1
+end
