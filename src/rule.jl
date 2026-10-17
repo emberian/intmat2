@@ -117,6 +117,15 @@ Absorption defaults are per cell and deliberately small: at `alpha_s = 0.05` a
 column of half-solid has an e-folding depth of 40 voxels, so a 128-deep slab is
 translucent. The layered analysis showed that `alpha_s = 2` turns everything below
 the top three layers into a dark waste store and removes the predicted patterns.
+
+`stencil` selects the activity coupling stencils: 0 is the six axis neighbours for the
+ring and the six axis voxels at distance 2 for the shell; 1 is the 19-point stencil
+(axes weight 1/3, edge diagonals weight 1/6, isotropic to fourth order) for the
+ring and the same stencil dilated by 2 for the shell. With axis stencils the growth
+rate at the pattern wavelength varies 300–500% with direction and patterns weave
+along the grid axes; the isotropic stencil brings that to ~11% (docs/analysis.md).
+Transport always uses the six faces. Existing recipes (stencil 0) are bitwise
+reproducible.
 """
 Base.@kwdef struct Physics{T}
     dt::T = 0.05
