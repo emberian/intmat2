@@ -161,3 +161,21 @@ end
     @test minimum(eigvals(Symmetric(Matrix(r.Wnb)))) >= -1e-12   # no anti-diffusion
     @test turing_prone_rule(MersenneTwister(3), 8) isa Rule{8,Float32}
 end
+
+@testset "analysis: two-scale coupling symbols" begin
+    c = TYPEII
+    r = mkrule(c); ss = steady_state(r, c.p; M=c.M)
+    P2 = Pencil2(r, c.p, ss)
+    @test norm(jacobian(r, c.p, ss, 1.3) - (P2.J0 - 1.3 * (P2.K1 + P2.KD))) < 1e-12
+    d1 = dispersion(r, c.p, ss); d2 = dispersion2(P2; nk=48)
+    @test d2.lambda_max ≈ d1.lambda_max rtol = 1e-3
+    @test kappa2(π, 0.0) ≈ 0 atol = 1e-12          # the radius-2 shell is blind to the checkerboard
+    @test kappa2(0.3, 0.2) ≈ kappa(0.6, 0.4)
+    # tied Mexican hat: scalar per-axis optimum cos k* = 1/(4β)
+    W = Matrix(1.0I, c.C, c.C)
+    P3 = Pencil2(r, c.p, ss; Wnb=4.0 .* W, Wnb2=-0.5 .* 4.0 .* W)
+    d3 = dispersion2(P3; nk=48)
+    @test classify(d3) == :turing && 3.5 < d3.wavelength < 7
+    ssa = steady_state(r, c.p; M=c.M, L_ambient=0.5)
+    @test ssa.L > 0.5 && ssa.converged
+end

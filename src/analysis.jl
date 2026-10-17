@@ -17,7 +17,7 @@ using KernelAbstractions
 using ..Intmat2: Rule, Physics, nchannels, World, step!, light!, run!, softplus, sigmoid, conductance, mobility
 
 export steady_state, jacobian, stepmap, dispersion, classify, kappa, axis_wavelength, stable_dt,
-       turing_prone_rule, layered_steady_state
+       turing_prone_rule, layered_steady_state, Pencil2, dispersion2, kappa2
 
 f64(x::AbstractArray) = Float64.(Array(x))
 
@@ -52,13 +52,14 @@ function material_balance(p, a, e, M, Lfun)
 end
 
 function material_of_h(rule, p, h, M, depth, Lfix)
+    depth, Lamb = depth isa Tuple ? depth : (depth, 0.0)
     vdep = f64(rule.vdep); vero = f64(rule.vero); vpig = f64(rule.vpig)
     a = p.k_dep * softplus(dot(vdep, h))
     e = p.k_ero * softplus(dot(vero, h))
     pig = sigmoid(dot(vpig, h))
     c = depthfactor(depth)
-    Lfun = Lfix === nothing ? (s -> lightat(p, c, s, pig)) :
-           Lfix isa Tuple ? (s -> p.L0 * exp(-(Lfix[2] + (p.alpha_s * s + p.alpha_p * pig) / 2))) :
+    Lfun = Lfix === nothing ? (s -> Lamb + lightat(p, c, s, pig)) :
+           Lfix isa Tuple ? (s -> Lamb + p.L0 * exp(-(Lfix[2] + (p.alpha_s * s + p.alpha_p * pig) / 2))) :
            (s -> Float64(Lfix))
     material_balance(p, a, e, M, Lfun)
 end
@@ -78,7 +79,8 @@ Spatially uniform fixed point `(h*, n*, s*, w*, L*)` at mass per voxel `M = n+s+
 Light is self-consistent at layer `depth` of a uniform slab,
 `L* = L0 exp(−(depth−½)(α_s s* + α_p σ(v_pig·h*)))`, unless `L` fixes it, or
 `tau_above = τ` places the layer under optical depth `τ`: `L* = L0 exp(−(τ + a*/2))`
-(and `light=:local` then perturbs only the layer's own absorbance).
+(and `light=:local` then perturbs only the layer's own absorbance). `L_ambient` adds
+a uniform, unattenuated term to `L*` (proposed step change; not in `step!` yet).
 Activity: damped Newton (finite-difference Jacobian, backtracking) on
 `G(h) = tanh(W_self h + W_in [n,s,w,L](h) + b) − h` from `h0` (default 0), with the
 material solved exactly for each `h`. Several fixed points may exist; this returns
@@ -90,9 +92,12 @@ converged, iters, residual, clamped, method` (`clamped` is true when a `min` in 
 `p.dt`, i.e. the discrete stepper's fixed point differs from this one).
 """
 function steady_state(rule::Rule{C}, p::Physics; M=1.0, depth=1, L=nothing, tau_above=nothing,
-                      h0=zeros(C), tol=1e-13, maxiter=200) where {C}
+                      L_ambient=0.0, h0=zeros(C), tol=1e-13, maxiter=200) where {C}
     p = Physics{Float64}(p)
     lightc = depthfactor(depth)
+    Lamb = Float64(L_ambient)
+    depth0 = depth
+    depth = (depth, Lamb)
     if tau_above !== nothing
         L = (:above, Float64(tau_above)); lightc = 0.5
     end
@@ -131,13 +136,14 @@ function steady_state(rule::Rule{C}, p::Physics; M=1.0, depth=1, L=nothing, tau_
         photo = p.k_photo * x.L * x.w * p.dt
         clamped = dep >= min(x.n, 1 - x.s) || ero >= x.s || photo >= x.w
     end
+    depth = depth0
     x === nothing && return (h=h, n=NaN, s=NaN, w=NaN, L=NaN, M=Float64(M), depth=depth,
                              converged=false, iters=iters, residual=nG, clamped=false, method=method,
-                             lightc=lightc, absorbance=NaN)
+                             lightc=lightc, absorbance=NaN, L_ambient=Lamb)
     a = p.alpha_s * x.s + p.alpha_p * sigmoid(dot(f64(rule.vpig), h))
     (h=h, n=x.n, s=x.s, w=x.w, L=x.L, M=Float64(M), depth=depth,
      converged=converged, iters=iters, residual=nG, clamped=clamped, method=method,
-     lightc=lightc, absorbance=a)
+     lightc=lightc, absorbance=a, L_ambient=Lamb)
 end
 
 function newton_h(rule::Rule{C}, p, h, M, depth, L, tol, maxiter) where {C}
@@ -192,8 +198,9 @@ function linear_parts(rule::Rule{C}, p, ss, light::Symbol) where {C}
     Λ = zeros(N)
     if light === :local
         c = hasproperty(ss, :lightc) ? ss.lightc : depthfactor(ss.depth)
-        Λ[1:C] .= -L * c * p.alpha_p * pig * (1 - pig) .* vpig
-        Λ[C+2] = -L * c * p.alpha_s
+        Lat = L - (hasproperty(ss, :L_ambient) ? ss.L_ambient : 0.0)   # attenuated part
+        Λ[1:C] .= -Lat * c * p.alpha_p * pig * (1 - pig) .* vpig
+        Λ[C+2] = -Lat * c * p.alpha_s
     elseif light !== :frozen
         throw(ArgumentError("light must be :frozen or :local"))
     end
@@ -446,6 +453,76 @@ function relax_column(rule::Rule{C}, p::Physics, layers; steps::Integer) where {
     end
     wd = light!(wd, rule, Physics{Float64}(p))
     run!(wd, rule, Physics{Float64}(p), steps)
+end
+
+# ------------------------------------------------------------------ two-scale coupling (proposed)
+
+"""
+    Pencil2(rule, p, ss; Wnb=rule.Wnb, Wnb2=nothing, light=:frozen)
+
+Linearization for a proposed two-scale coupling
+`m = Σ_{|d|=1} g (h_y − h_x)` (weight `W_nb`) `+ Σ_{d = ±2 eᵢ} g (h_y − h_x)` (weight
+`W_nb2`), optionally with the ring applied to a filtered `h̄` (see `dispersion2`).
+`J(k) = J0 − κ1(k) F(k) K1 − κ2(k) K2 − κ1(k) KD` with
+`K1 = S g* W_nb/τ_h`, `K2 = S g* W_nb2/τ_h`, `KD = D(s*)` on n, w.
+Both shells use the same conductance `g(s_x, s_y)`; at the uniform state that is `g*`.
+"""
+struct Pencil2
+    J0::Matrix{Float64}; K1::Matrix{Float64}; K2::Matrix{Float64}; KD::Matrix{Float64}
+    Q::Matrix{Float64}
+end
+function Pencil2(rule::Rule{C}, p::Physics, ss; Wnb=nothing, Wnb2=nothing, light::Symbol=:frozen) where {C}
+    p = Physics{Float64}(p)
+    q = linear_parts(rule, p, ss, light)
+    N = C + 3
+    J0 = jacobian(rule, p, ss, 0.0; light)
+    K1 = zeros(N, N); K2 = zeros(N, N); KD = zeros(N, N)
+    K1[1:C, 1:C] .= q.S .* (q.g .* (Wnb === nothing ? q.Wnb : Matrix{Float64}(Wnb))) ./ p.tau_h
+    Wnb2 === nothing || (K2[1:C, 1:C] .= q.S .* (q.g .* Matrix{Float64}(Wnb2)) ./ p.tau_h)
+    KD[C+1, C+1] = q.D; KD[C+3, C+3] = q.D
+    Pencil2(J0, K1, K2, KD, massfree_basis(C))
+end
+
+"""Per-axis filter symbols: `:none` 1, `:box` (1 + 2cos k)/3 (3-point mean; negative for
+k > 2π/3), `:binomial` (1 + cos k)/2 (¼,½,¼; ≥ 0, zero at k = π)."""
+filtersym(f::Symbol, k) = f === :none ? 1.0 : f === :box ? (1 + 2cos(k)) / 3 :
+                          f === :binomial ? (1 + cos(k)) / 2 : throw(ArgumentError("filter $f"))
+
+"""Coupling symbols of a horizontal mode (kx, ky): ring `κ1 = 2Σ(1−cos kᵢ)` and the
+axis radius-2 shell `κ2 = 2Σ(1−cos 2kᵢ) = κ1(2k)`."""
+kappa2(kx, ky) = 2(1 - cos(2kx)) + 2(1 - cos(2ky))
+
+function dominant2(P::Pencil2, kx, ky; filter::Symbol=:none)
+    if kx == 0 && ky == 0
+        λ = eigvals!(P.Q' * P.J0 * P.Q)
+    else
+        κ1 = kappa(kx, ky); κ2 = kappa2(kx, ky)
+        F = filtersym(filter, kx) * filtersym(filter, ky)
+        λ = eigvals!(P.J0 .- (κ1 * F) .* P.K1 .- κ2 .* P.K2 .- κ1 .* P.KD)
+    end
+    λ[argmax(real.(λ))]
+end
+
+"""
+    dispersion2(P::Pencil2; filter=:none, nk=24)
+
+Max `Re λ` over the horizontal wavevector grid `0 ≤ ky ≤ kx ≤ π` in steps of `π/nk`
+(the symbols are symmetric under kx ↔ ky and sign flips). Returns the fields
+`classify` needs (`kappa_star` is the ring symbol κ1 at the fastest k) plus `kx, ky`
+and `wavelength = 2π/|k*|`.
+"""
+function dispersion2(P::Pencil2; filter::Symbol=:none, nk::Integer=24)
+    λ0 = dominant2(P, 0.0, 0.0)
+    best = (re=-Inf, λ=0.0im, kx=0.0, ky=0.0)
+    for i in 0:nk, j in 0:i
+        (i == 0 && j == 0) && continue
+        kx = π * i / nk; ky = π * j / nk
+        λ = dominant2(P, kx, ky; filter)
+        real(λ) > best.re && (best = (re=real(λ), λ=λ, kx=kx, ky=ky))
+    end
+    kk = hypot(best.kx, best.ky)
+    (re0=real(λ0), im0=imag(λ0), lambda_max=best.re, imag_star=imag(best.λ),
+     kappa_star=kappa(best.kx, best.ky), kx=best.kx, ky=best.ky, wavelength=2π / kk)
 end
 
 # ------------------------------------------------------------------ Turing-prone rules

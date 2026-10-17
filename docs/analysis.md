@@ -217,3 +217,75 @@ layers thick over a dark waste store. That store changes the top layer's balance
 enough to remove the Turing prediction in most recipes. The predictions are exact
 for `N×N×1` worlds; for slabs use thin optics or few layers, or re-derive the class
 from the relaxed column.
+
+## Proposed step change: two-scale coupling and ambient light
+
+Lane C's 128³ photographs and the atlas agree: one 6-neighbour ring gives the rule
+one spatial scale, so lateral structure is either the checkerboard (the ring's
+anti-diffusion at κ = 8) or slow conserved long-wave separation through `s`.
+`Pencil2` / `dispersion2` (`src/analysis.jl`) linearize a second shell, and
+`bin/atlas2.jl` re-runs the 20 000 atlas points (frozen light, depth 1, horizontal
+k grid step π/24) → `results/atlas-20261016-twoscale.json` and `…-tied.json`.
+
+**Shell: the 6 axis voxels at distance 2.** Its symbol is `κ2(k) = 2Σ(1 − cos 2kᵢ)
+= κ1(2k)`: separable, the same small-k shape as the ring (`κ2 ≈ 4|k|²`), and zero
+at k = π, so it neither creates nor cures the checkerboard. For scalar weights
+`w1` (ring) and `w2` (shell) the per-axis growth is `−2(1−c)[w1 + 2w2(1+c)]`,
+`c = cos k`, with its maximum at `cos k* = −w1/(4w2)`. With `w1 > 0` (diffusive
+ring) and `w2 = −β w1`, that is `cos k* = 1/(4β)`: the wavelength is set by β alone
+(β 0.3 → 10.7 cells, 0.4 → 7.0, 0.5 → 6.0 on an axis; diagonal modes are √2 shorter)
+and the peak strength is `w1 (4β−1)²/(4β)` per axis. The 18-voxel shell
+(`|d|² ∈ {2, 4}`) adds face diagonals with symbol `4Σ_{i<j}(1 − cos kᵢ cos kⱼ)`:
+non-separable, no closed form for k*, and 12 more loads per voxel.
+
+Class fractions (20 000 points; Turing+wave wavelength histogram; share of all
+points that are Turing or wave with λ_wave in 4–16):
+
+| coupling | stable | turing | wave | gridscale | λ 2–4 | 4–8 | 8–16 | 16+ | 4–16 share | median Turing λ |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ring (random W_nb), as now | 0.787 | 0.0046 | 0.0000 | 0.120 | 26 | 41 | 13 | 12 | 0.0027 | 1.1e-4 |
+| + independent W_nb2 = −0.2·QQᵀ/C | 0.514 | 0.221 | 0.037 | 0.140 | 5132 | 16 | 4 | 2 | 0.0010 | 0.64 |
+| + independent W_nb2, nb2 0.8 | 0.210 | 0.630 | 0.030 | 0.042 | 13194 | 0 | 2 | 0 | 0.0001 | 3.4 |
+| box-filtered ring (1+2cos k)/3 | 0.890 | 0.0079 | 0.0009 | 0.013 | 135 | 32 | 6 | 4 | 0.0019 | 3.5e-3 |
+| binomial-filtered ring (1+cos k)/2 | 0.893 | 0.0076 | 0.0009 | 0.011 | 135 | 20 | 6 | 8 | 0.0013 | 1.4e-3 |
+| PSD ring nb·PPᵀ/C | 0.896 | 0.0097 | 0.0001 | 0.0055 | 37 | 88 | 36 | 35 | 0.0063 | 1.7e-4 |
+| tied: W_nb = 1·PPᵀ/C, W_nb2 = −0.5 W_nb | 0.698 | 0.174 | 0.037 | 0.0020 | 133 | 4086 | 4 | 2 | 0.205 | 0.30 |
+| tied: W_nb = 2·PPᵀ/C, β 0.5 | 0.471 | 0.382 | 0.057 | 0.0010 | 76 | 8707 | 2 | 0 | 0.436 | 0.82 |
+| tied: W_nb = 4·PPᵀ/C, β 0.4 | 0.504 | 0.352 | 0.055 | 0.0008 | 31 | 8108 | 2 | 0 | 0.406 | 0.70 |
+| tied: W_nb = 4·PPᵀ/C, β 0.5 | 0.285 | 0.580 | 0.046 | 0.0003 | 28 | 12487 | 1 | 0 | 0.624 | 1.9 |
+| tied: W_nb = 4·PPᵀ/C, β 0.3 | 0.884 | 0.022 | 0.004 | 0.0013 | 41 | 287 | 198 | 2 | 0.024 | 1.2e-3 |
+
+(The ring row has 12.0% gridscale rather than the atlas's 14.6% because `steady_state`
+now rejects saturated points: 3.6% no steady state here.)
+
+- An *independent* inhibitory `W_nb2` raises Turing to 22–63%, but every pattern sits
+  at k = (π/2, π/2), λ ≈ 2.8: a radius-2 checkerboard. It does not lower
+  gridscale, because the random ring's anti-diffusion is untouched.
+- *Filtering the ring alone* cuts gridscale from 12% to 1.1–1.3% (box and binomial
+  alike: the box symbol is negative for k > 2π/3 but small there). Turing barely moves
+  (0.46% → 0.8%) and stays short or slow. A PSD ring alone does the same (0.55%).
+- *Tied Mexican hat* (`W_nb` PSD, `W_nb2 = −β W_nb`) gives what the diagnosis asked for:
+  Turing+wave at 4–16 cells in 20–62% of points, gridscale ≤ 0.2%, growth on the
+  activity clock (median 0.3–1.9 per unit time, against 1e-4 for today's Turing).
+  Within the atlas's k-resolution, β ≥ 0.4 lands in 4–8 cells; reaching 8–16 needs
+  β ≈ 0.3, where growth falls as (4β−1)², so it needs a larger `W_nb`.
+
+**Recommended per-voxel formula** (for voxel x, neighbours with the slab's no-flux
+walls: z-offsets that leave `[1, Nz]` are omitted, as for the ring):
+
+```
+m1 = Σ_{d ∈ ±e_x, ±e_y, ±e_z}   g(s_x, s_{x+d}) (h_{x+d} − h_x)      # existing ring
+m2 = Σ_{d ∈ ±2e_x, ±2e_y, ±2e_z} g(s_x, s_{x+d}) (h_{x+d} − h_x)     # new: axis shell at distance 2
+u  = W_self h + W_nb m1 + W_nb2 m2 + W_in [n, s, w, L] + b
+L  = L_ambient + L0 exp(−(τ_above + a/2))                           # a = α_s s + α_p σ(v_pig·h)
+```
+
+Symbols at the uniform state: `m̂ = −g*(κ1(k) W_nb + κ2(k) W_nb2) δh`,
+`κ1 = 2Σ(1 − cos kᵢ)`, `κ2 = 2Σ(1 − cos 2kᵢ)`; `L_ambient` adds to `L*` and does not
+enter δL. Conductance across distance 2 uses the two end voxels only. `W_nb2` is a
+full learnable C×C matrix (`3C² + 8C` parameters), `L_ambient` a Physics field
+(default 0 keeps today's step bit-identical when `W_nb2 = 0`). Sample new rules with
+`W_nb = nb1·PPᵀ/C`, nb1 ∈ [1, 4], `W_nb2 = −β W_nb`, β ∈ [0.3, 0.5] (wavelength ≈
+2π/acos(1/(4β)) on an axis); evolution can then break the tie. Cost: six more
+neighbour loads of `h` and `s` per voxel. `stable_dt` does not yet include `W_nb2`;
+with activity growth of 1–6 per unit time, recheck dt against the new stepmap.
