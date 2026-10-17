@@ -259,7 +259,7 @@ if haskey(A, "hv")
 end
 
 summary = Dict{String,Any}("command" => cmd, "commit" => commit, "run" => run, "physics" => p,
-                           "eval" => cfgnt, "pop" => pop, "gens" => gens, "seed" => seed, "scales" => scales, "prior" => arg("prior", "gauss"),
+                           "eval" => cfgnt, "pop" => pop, "gens" => gens, "seed" => seed, "scales" => scales, "prior" => arg("prior", "gauss"), "evaluator" => arg("evaluator", "tasks"),
                            "select_objectives" => collect(SELECT_OBJECTIVES), "modes" => Dict{String,Any}())
 archives = Dict{Symbol,Any}()
 cache = Dict{Vector{Float64},Any}()
@@ -277,7 +277,8 @@ for mode in modes
         println(io, js(line)); flush(io)
     end
     arch, P = evolve(C, p, cfg; mode=mode, pop=pop, gens=gens, seed=seed,
-                     init=mode == :nsga ? init : nothing, log=log, cache=cache, scales=scales, sampler=sampler)
+                     init=mode == :nsga ? init : nothing, log=log, cache=cache, scales=scales, sampler=sampler,
+                     eval=arg("evaluator", "tasks") == "batch" ? Intmat2.evaluate_batch : evaluate)
     close(io)
     wall = time() - t0
     F = reduce(hcat, [objvec(a.res, SELECT_OBJECTIVES) for a in arch])

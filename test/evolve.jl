@@ -59,3 +59,15 @@ end
     r2, p2, _ = read_recipe(path)
     @test r2 == r && p2 == p
 end
+
+@testset "evolve: WorldBatch evaluator matches per-world evaluator" begin
+    C = 4
+    p = Physics{Float32}(dt=0.1f0)
+    cfg = EvalConfig(dims=(8, 8, 6), T=80, cont=20, rec_every=10, probe_every=2, nprobe=4)
+    rules = [random_rule(MersenneTwister(i), C) for i in 1:3]
+    a = Intmat2.evaluate_batch(rules, p, cfg)
+    b = [Intmat2.evaluate_one(r, p, cfg) for r in rules]
+    for (x, y) in zip(a, b), k in (Intmat2.ALL_OBJECTIVES..., :mean_s, :std_h)
+        @test x[k] ≈ y[k] atol = 1e-4
+    end
+end

@@ -244,9 +244,17 @@ states score `BAD` with `finite=false`.
 function evaluate_one(rule::Rule{C,T}, p::Physics{T}, cfg::EvalConfig) where {C,T}
     t0 = time()
     wd, trace, probes = record_run(rule, p, cfg)
+    ctrl, pert, er, mask = perturbations(wd, rule, p, cfg)
+    ctrl = run!(ctrl, rule, p, cfg.cont)
+    pert = run!(pert, rule, p, cfg.cont)
+    er = run!(er, rule, p, cfg.cont)
+    score_rule(rule, p, cfg, trace, probes, Array(wd.s), Array(wd.h), Array(wd.L),
+               Array(ctrl.s), Array(ctrl.h), Array(pert.s), Array(pert.h), Array(er.s), mask, t0)
+end
+
+"""The three continuation starts from `wd`: control, activity reset, wound (+ its mask)."""
+function perturbations(wd::World{C,T}, rule, p, cfg) where {C,T}
     s_end = Array{Float64}(Array(wd.s))
-    fin = all(isfinite, s_end) && all(isfinite, probes)
-    # three continuations from the same state
     ctrl = copy(wd)
     pert = copy(wd)
     rng = MersenneTwister(cfg.seed + 104729)
@@ -262,18 +270,19 @@ function evaluate_one(rule::Rule{C,T}, p::Physics{T}, cfg::EvalConfig) where {C,
     end
     copyto!(er.n, nh); copyto!(er.s, sh); copyto!(er.h, hh)
     er = light!(er, rule, p)
-    ctrl = run!(ctrl, rule, p, cfg.cont)
-    pert = run!(pert, rule, p, cfg.cont)
-    er = run!(er, rule, p, cfg.cont)
-    sc = Array{Float64}(Array(ctrl.s)); hc = Array(ctrl.h)
-    sp = Array{Float64}(Array(pert.s)); hp = Array(pert.h)
-    se = Array{Float64}(Array(er.s))
-    fin &= all(isfinite, sc) && all(isfinite, hc) && all(isfinite, hp) && all(isfinite, se)
+    ctrl, pert, er, mask
+end
+
+"""All objectives and diagnostics from host copies of the recorded and continued fields."""
+function score_rule(rule, p, cfg, trace, probes, s_end, h_end, L_end, sc, hc, sp, hp, se, mask, t0)
+    s_end = Float64.(s_end); sc = Float64.(sc); sp = Float64.(sp); se = Float64.(se)
+    fin = all(isfinite, s_end) && all(isfinite, probes) && all(isfinite, sc) && all(isfinite, hc) &&
+          all(isfinite, hp) && all(isfinite, se)
     st = structure(s_end)
     sttop = structure(view(s_end, :, :, size(s_end, 3):size(s_end, 3)))   # the lit top layer alone
     tm = temporal(probes)
     mem = memory(sc, sp, hc, hp)
-    lb = light_budget(Array{Float64}(Array(wd.L)), Float64(p.L0))
+    lb = light_budget(Float64.(L_end), Float64(p.L0))
     obj = fin ? (persistence=persistence(trace), structure=st.score, temporal=tm.score,
                  memory_s=mem.memory_s, memory_h=mem.memory_h,
                  recovery=recovery(sc, se, mask, s_end), light=lb.score) : BAD
@@ -285,12 +294,64 @@ function evaluate_one(rule::Rule{C,T}, p::Physics{T}, cfg::EvalConfig) where {C,
         NaN
     end
     last = trace[end]
-    diag = (stable_dt=sdt, dt_ok=!(sdt < Float64(p.dt)), mean_s=last.mean_s, std_s=last.std_s, solid_frac=last.solid_frac, mean_n=last.mean_n,
-            mean_w=last.mean_w, light_bottom=last.light_bottom, mean_abs_h=last.mean_abs_h,
-            std_h=last.std_h, mass_drift=last.mass - trace[1].mass, struct_frac=st.frac,
-            struct_rms=st.rms, lambda=st.lambda, structure_top=sttop.score, lambda_top=sttop.lambda, t_fixed=tm.fixed, t_periodic=tm.periodic, photic=lb.photic,
-            h_autocorr=corr0(Array(wd.h), hc), finite=fin, wall=time() - t0)
+    diag = (stable_dt=sdt, dt_ok=!(sdt < Float64(p.dt)), mean_s=last.mean_s, std_s=last.std_s,
+            solid_frac=last.solid_frac, mean_n=last.mean_n, mean_w=last.mean_w,
+            light_bottom=last.light_bottom, mean_abs_h=last.mean_abs_h, std_h=last.std_h,
+            mass_drift=last.mass - trace[1].mass, struct_frac=st.frac, struct_rms=st.rms,
+            lambda=st.lambda, structure_top=sttop.score, lambda_top=sttop.lambda, t_fixed=tm.fixed,
+            t_periodic=tm.periodic, photic=lb.photic, h_autocorr=corr0(h_end, hc), finite=fin,
+            wall=time() - t0)
     merge(map(x -> isfinite(x) ? x : 0.0, obj), diag)
+end
+
+@kernel function probe_batch_kernel!(buf, @Const(h), @Const(idx), r, C, nv)
+    c, q, b = @index(Global, NTuple)
+    @inbounds buf[c, q, r, b] = h[c+C*(idx[q]-1)+C*nv*(b-1)]
+end
+
+"""
+    evaluate_batch(rules, p, cfg) -> Vector{NamedTuple}
+
+Same measurements as `evaluate_one`, with all rules stepped together in one
+`WorldBatch` (one launch per step), the three continuations in a second batch of 3B
+worlds. Identical initial condition for every world (`cfg.seed`).
+"""
+function evaluate_batch(rules::AbstractVector{<:Rule{C,T}}, p::Physics{T}, cfg::EvalConfig) where {C,T}
+    t0 = time()
+    be = cfg.backend; B = length(rules); nv = prod(cfg.dims)
+    wb = WorldBatch(be, C, cfg.dims, B; T=T, seeds=fill(cfg.seed, B), n0=cfg.n0, h_scale=cfg.h_scale)
+    θ = device_rules(be, rules)
+    wb = light!(wb, θ, p)
+    prng = MersenneTwister(cfg.seed + 7919)
+    idx = adapt(be, Int32.(rand(prng, 1:nv, cfg.nprobe)))
+    tp = cfg.T - cfg.T ÷ 2
+    M = (cfg.T - tp) ÷ cfg.probe_every
+    buf = KA.zeros(be, T, C, cfg.nprobe, max(M, 1), B)
+    pk = probe_batch_kernel!(be)
+    traces = [NamedTuple[] for _ in 1:B]
+    r = 0
+    for st in 1:cfg.T
+        wb = step!(wb, θ, p; sync=false)
+        if st % cfg.rec_every == 0
+            KA.synchronize(be)
+            for (b, sm) in enumerate(summarize(wb))
+                push!(traces[b], sm)
+            end
+        end
+        if st > tp && (st - tp) % cfg.probe_every == 0 && r < M
+            r += 1
+            pk(buf, wb.h, idx, r, C, nv; ndrange=(C, cfg.nprobe, B))
+        end
+    end
+    KA.synchronize(be)
+    probes = Array{Float64}(Array(buf))
+    starts = [perturbations(world(wb, b), rules[b], p, cfg) for b in 1:B]
+    cb = WorldBatch(be, [w for k in 1:3 for w in (st[k] for st in starts)])
+    cb = run!(cb, device_rules(be, vcat(rules, rules, rules)), p, cfg.cont)
+    hS = Array(wb.s); hH = Array(wb.h); hL = Array(wb.L); cS = Array(cb.s); cH = Array(cb.h)
+    [score_rule(rules[b], p, cfg, traces[b], probes[:, :, :, b], hS[:, :, :, b], hH[:, :, :, :, b],
+                hL[:, :, :, b], cS[:, :, :, b], cH[:, :, :, :, b], cS[:, :, :, B+b], cH[:, :, :, :, B+b],
+                cS[:, :, :, 2B+b], starts[b][4], t0) for b in 1:B]
 end
 
 """
