@@ -1,0 +1,215 @@
+{
+ "backend": "Metal (Apple M2 Max)",
+ "dtype": "Float32",
+ "C": 8,
+ "date": "2026-10-16",
+ "caveat": "the GPU was shared with other lanes' Metal runs (ioreg Device Utilization 30-98% during most runs); numbers are best-of interleaved repetitions and vary up to 2x between sessions",
+ "steps": {
+  "command": "julia --project=env/metal bench/steps.jl metal results/scratch/steps-metal.json",
+  "dtype": "Float32",
+  "C": 8,
+  "note": "best of 5 interleaved repetitions; steps/s",
+  "steps_per_s": {
+   "64": {
+    "after fast, run!": 3390.9,
+    "after fast, run!, two-shell rule": 2280.7,
+    "after fast, sync/step": 1044.7,
+    "after precise, run!": 1997.5,
+    "after precise, sync/step": 893.6,
+    "before (4 kernels, sync/step)": 1087.2
+   },
+   "128": {
+    "after fast, run!": 406.7,
+    "after fast, run!, two-shell rule": 265.6,
+    "after fast, sync/step": 380.6,
+    "after precise, run!": 236.6,
+    "after precise, sync/step": 228.5,
+    "before (4 kernels, sync/step)": 243.6
+   },
+   "256": {
+    "after fast, run!": 47.5,
+    "after fast, run!, two-shell rule": 29.5,
+    "after fast, sync/step": 46.8,
+    "after precise, run!": 27.1,
+    "after precise, sync/step": 28.1,
+    "before (4 kernels, sync/step)": 36.5
+   }
+  }
+ },
+ "steps_quiet_session_before_shell": {
+  "command": "julia --project=env/metal bench/steps.jl metal (commit 1f4a9e8)",
+  "note": "GPU ~70% busy from other lanes",
+  "steps_per_s": {
+   "64": {
+    "before": 588.9,
+    "after fast, run!": 4060.0
+   },
+   "128": {
+    "before": 184.3,
+    "after fast, run!": 524.2
+   },
+   "256": {
+    "before": 23.4,
+    "after fast, run!": 49.1
+   }
+  }
+ },
+ "kernel_ms_before": {
+  "command": "julia --project=env/metal bench/kernels_baseline.jl (09d1bd7 kernels, sync after each)",
+  "64": {
+   "activity": 2.092,
+   "transport": 1.58,
+   "material": 1.737,
+   "light": 1.603
+  },
+  "128": {
+   "activity": 4.705,
+   "transport": 3.92,
+   "material": 4.195,
+   "light": 2.18
+  },
+  "256": {
+   "activity": 14.381,
+   "transport": 8.161,
+   "material": 11.689,
+   "light": 4.895
+  }
+ },
+ "kernel_ms_after": {
+  "command": "julia --project=env/metal bench/kernels.jl metal (one-ring rule, wg 32, back-to-back launches)",
+  "note": "quietest session (commit 1f4a9e8); later sessions ran 1.5-2.3x slower under contention",
+  "64": {
+   "update_precise": 0.599,
+   "update_fast": 0.223,
+   "light": 0.031
+  },
+  "128": {
+   "update_precise": 4.665,
+   "update_fast": 1.943,
+   "light": 0.075
+  },
+  "256": {
+   "update_precise": 35.82,
+   "update_fast": 16.14,
+   "light": 0.44
+  }
+ },
+ "ablation_256_ms": {
+  "command": "scratch ablation of the fused kernel (rule as struct, precise)",
+  "full": 32.7,
+  "fast_tanh": 16.2,
+  "no_matvec": 17.5,
+  "no_neighbours": 33.5,
+  "memory_only": 4.7,
+  "fast_all_plus_rule_in_threadgroup": 11.0
+ },
+ "batch": {
+  "command": "julia --project=env/metal bench/batch.jl metal results/scratch/batch-metal.json",
+  "dtype": "Float32",
+  "C": 8,
+  "unit": "worlds*steps/s, best of 3, fast math",
+  "rows": [
+   {
+    "N": 32,
+    "B": 1,
+    "batch_rules_matrix": 14069.3,
+    "batch_shared_rule": 16340.1,
+    "separate_worlds": 15196.5
+   },
+   {
+    "N": 32,
+    "B": 4,
+    "batch_rules_matrix": 18350.5,
+    "batch_shared_rule": 24772.1,
+    "separate_worlds": 15868.9
+   },
+   {
+    "N": 32,
+    "B": 16,
+    "batch_rules_matrix": 19081.2,
+    "batch_shared_rule": 27658.9,
+    "separate_worlds": 13922.3
+   },
+   {
+    "N": 32,
+    "B": 64,
+    "batch_rules_matrix": 20599.0,
+    "batch_shared_rule": 25435.7,
+    "separate_worlds": 15169.5
+   },
+   {
+    "N": 64,
+    "B": 1,
+    "batch_rules_matrix": 2342.8,
+    "batch_shared_rule": 3072.4,
+    "separate_worlds": 3158.5
+   },
+   {
+    "N": 64,
+    "B": 4,
+    "batch_rules_matrix": 2554.1,
+    "batch_shared_rule": 3319.9,
+    "separate_worlds": 3224.8
+   },
+   {
+    "N": 64,
+    "B": 16,
+    "batch_rules_matrix": 2684.6,
+    "batch_shared_rule": 3415.3,
+    "separate_worlds": 2762.1
+   },
+   {
+    "N": 64,
+    "B": 64,
+    "batch_rules_matrix": 2798.2,
+    "batch_shared_rule": 3040.8,
+    "separate_worlds": 1483.1
+   }
+  ]
+ },
+ "batch_rules_tuple": {
+  "command": "julia --project=env/metal bench/batch_tuple.jl metal",
+  "32_B4": {
+   "matrix": 29710.9,
+   "tuple": 1160.4
+  },
+  "32_B16": {
+   "matrix": 38960.6,
+   "tuple": 265.9
+  },
+  "32_B64": "tuple fails to compile"
+ },
+ "shell_cost": {
+  "command": "julia --project=env/metal bench/shellcost.jl",
+  "128": {
+   "pre_shell": 487.4,
+   "one_ring": 591.6,
+   "two_shell": 298.0
+  },
+  "256": {
+   "pre_shell": 63.7,
+   "one_ring": 48.4,
+   "two_shell": 31.4
+  }
+ },
+ "stencil": {
+  "command": "julia --project=env/metal bench/stencil.jl metal",
+  "128": {
+   "two_shell_s0": 375.7,
+   "two_shell_s1": 137.9,
+   "one_ring_s0": 521.8,
+   "one_ring_s1": 199.4
+  },
+  "256": {
+   "two_shell_s0": 29.4,
+   "two_shell_s1": 10.3,
+   "one_ring_s0": 37.5,
+   "one_ring_s1": 15.9
+  }
+ },
+ "gate": {
+  "command": "julia --project=env/metal bench/gate.jl metal {precise|fast}",
+  "precise_max_abs": 0.0,
+  "fast_max_abs": 5.81e-07
+ }
+}

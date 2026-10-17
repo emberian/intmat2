@@ -1,0 +1,188 @@
+{
+ "backend": "ROCm, RX 6750 XT (gfx1031) on hbox",
+ "dtype": "Float32",
+ "C": 8,
+ "date": "2026-10-16",
+ "env": "/othersys/tmp/intmat2/env.sh; SWARM_MEM_MAX=24G /home/hbox/bin/swarm-build timeout 1500s taskset -c 0-3 $JL --startup-file=no --project=env/amd <script>",
+ "caveat": "GPU clocks on auto DPM: single runs vary up to 2x; best-of interleaved",
+ "steps": {
+  "command": "julia --project=env/amd bench/steps.jl rocm results/scratch/steps-hbox.json",
+  "dtype": "Float32",
+  "C": 8,
+  "note": "best of 5 interleaved repetitions; steps/s",
+  "steps_per_s": {
+   "64": {
+    "after fast, run!": 6866.0,
+    "after fast, run!, two-shell rule": 6571.5,
+    "after fast, sync/step": 6202.5,
+    "after precise, run!": 6890.7,
+    "after precise, sync/step": 6234.9,
+    "before (4 kernels, sync/step)": 5769.4
+   },
+   "128": {
+    "after fast, run!": 985.9,
+    "after fast, run!, two-shell rule": 817.2,
+    "after fast, sync/step": 967.5,
+    "after precise, run!": 970.2,
+    "after precise, sync/step": 957.8,
+    "before (4 kernels, sync/step)": 884.2
+   },
+   "256": {
+    "after fast, run!": 121.6,
+    "after fast, run!, two-shell rule": 101.4,
+    "after fast, sync/step": 119.8,
+    "after precise, run!": 119.3,
+    "after precise, sync/step": 121.9,
+    "before (4 kernels, sync/step)": 93.6
+   }
+  }
+ },
+ "steps_before_stencil_flag": {
+  "note": "commit bca05ac, runtime shell flag, no stencil branch",
+  "256": {
+   "before": 90.2,
+   "after fast, run!": 141.8,
+   "two-shell": 127.4
+  },
+  "128": {
+   "before": 886.6,
+   "after fast, run!": 1156.8,
+   "two-shell": 1016.4
+  },
+  "64": {
+   "before": 5756.8,
+   "after fast, run!": 8633.6,
+   "two-shell": 7691.3
+  }
+ },
+ "kernel_ms_256": {
+  "update_fast_wg64": 8.2,
+  "update_precise_wg64": 8.3,
+  "light": 0.13,
+  "note": "commit 1f4a9e8"
+ },
+ "parity_32_20steps": {
+  "command": "bench/parity.jl rocm",
+  "precise": {
+   "s": 5.96e-08,
+   "h": 1.79e-07
+  },
+  "fast": {
+   "s": 5.96e-08,
+   "h": 1.79e-07
+  },
+  "mass_ratio": 1.0
+ },
+ "gate": {
+  "precise_max_abs": 4.69e-07,
+  "fast_max_abs": 3.95e-07
+ },
+ "maxgrid": {
+  "command": "bench/maxgrid.jl rocm N (fresh process per N)",
+  "384": {
+   "steps_per_s": 40.67,
+   "gvox": 2.3,
+   "world_GiB": 4.85
+  },
+  "448": {
+   "steps_per_s": 25.6,
+   "gvox": 2.3,
+   "world_GiB": 7.7
+  },
+  "480": {
+   "steps_per_s": 20.64,
+   "gvox": 2.28,
+   "world_GiB": 9.48,
+   "device_used_GiB": 10.6
+  },
+  "496": "allocation fails"
+ },
+ "batch": {
+  "command": "julia --project=env/amd bench/batch.jl rocm results/scratch/batch-hbox.json",
+  "dtype": "Float32",
+  "C": 8,
+  "unit": "worlds*steps/s, best of 3, fast math",
+  "rows": [
+   {
+    "N": 32,
+    "B": 1,
+    "batch_rules_matrix": 34143.6,
+    "batch_shared_rule": 36290.6,
+    "separate_worlds": 27996.9
+   },
+   {
+    "N": 32,
+    "B": 4,
+    "batch_rules_matrix": 54728.0,
+    "batch_shared_rule": 60058.9,
+    "separate_worlds": 30287.2
+   },
+   {
+    "N": 32,
+    "B": 16,
+    "batch_rules_matrix": 72915.1,
+    "batch_shared_rule": 78143.7,
+    "separate_worlds": 30327.9
+   },
+   {
+    "N": 32,
+    "B": 64,
+    "batch_rules_matrix": 74163.9,
+    "batch_shared_rule": 76607.1,
+    "separate_worlds": 30303.2
+   },
+   {
+    "N": 64,
+    "B": 1,
+    "batch_rules_matrix": 7659.7,
+    "batch_shared_rule": 8599.3,
+    "separate_worlds": 8563.9
+   },
+   {
+    "N": 64,
+    "B": 4,
+    "batch_rules_matrix": 9078.5,
+    "batch_shared_rule": 9507.2,
+    "separate_worlds": 8139.8
+   },
+   {
+    "N": 64,
+    "B": 16,
+    "batch_rules_matrix": 9215.7,
+    "batch_shared_rule": 9374.1,
+    "separate_worlds": 7246.1
+   },
+   {
+    "N": 64,
+    "B": 64,
+    "batch_rules_matrix": 9088.0,
+    "batch_shared_rule": 9222.0,
+    "separate_worlds": 7256.9
+   }
+  ]
+ },
+ "stencil": {
+  "command": "bench/stencil.jl rocm",
+  "128": {
+   "two_shell_s0": 803.7,
+   "two_shell_s1": 455.8,
+   "one_ring_s0": 992.7,
+   "one_ring_s1": 686.9
+  },
+  "256": {
+   "two_shell_s0": 104.4,
+   "two_shell_s1": 56.1,
+   "one_ring_s0": 121.1,
+   "one_ring_s1": 85.0
+  },
+  "val_specialized_alternative": {
+   "256": {
+    "two_shell_s0": 131.1,
+    "two_shell_s1": 43.3,
+    "one_ring_s0": 141.4,
+    "one_ring_s1": 65.3
+   },
+   "note": "not adopted: slower for stencil 1 here and for both stencils on Metal"
+  }
+ }
+}
