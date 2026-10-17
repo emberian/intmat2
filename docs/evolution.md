@@ -124,3 +124,26 @@ fraction). One world seed during search; one Physics family per run; ~1 hour per
 experiment on a shared GPU; seven generations is short. Thresholded regions are a
 measurement choice, not organisms. These are machine measurements of a field, not
 claims of life.
+
+## Part III (partial, stopped for system load)
+
+New objectives `fragmentation` (1 − largest-region share, × min(1, median size/27); not
+4x(1−x), which would score many equal bodies as low as dust) and `isolation` (volume-
+weighted bounding-box compactness × (1 − share of surface within 2 cells of another
+region); regions wrapping the periodic box score 0); tests cover cubes, sheets, sponge,
+crumbs. Fragment identity (n05-188 at 64×64×24, t 300, h every 5): between-fragment
+variance of mean h is 0.05–0.2 of the depth-matched within-network variance, fragment
+means sit 0.26–0.36 network SD from it (none beyond 2 SD), and lineage self-similarity
+(median cosine 0.99) barely exceeds same-time cross-fragment similarity (0.93): crumbs,
+not individuals (`results/evolve-identity-n05-188-64.json`). Search arm (t 200, untied,
+half seeded from n05-188): random 224 evals, NSGA 96 of 224. Best fragmentation with
+turnover > 0: random 0.79, NSGA 0.73, both beating n05-188 (0.07 at this setting);
+isolation ≤ 0.02 everywhere, so the 5-objective hypervolume is ≈ 0 for both.
+
+**Status.** Objectives: finished and tested. Fragment identity: finished. Search arm: not
+finished (NSGA stopped at generation 3; no long-run series, no evolved-fragments recipes).
+Resume the arm: `julia -t 8 --project=env/metal bin/evolve.jl --run frag-n05 --life 1 --g1 -0.5
+--alpha_s 0.05 --alpha_p 0.1 --backend metal --n0 0.5 --pop 32 --gens 7 --t_main 200 --t_cont 25
+--space untied --modes nsga --seed_from results/evolve-life-n05-nsga.jsonl:188 --seed_n 16`;
+then `--recipe` (with `--dims 128,128,48 --t_run 300 --n0 0.5`) for the top three and
+`--series <recipes> --dims 128,128,48 --t_run 300 --cap_dt 2 --late 150`.
