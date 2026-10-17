@@ -130,9 +130,9 @@ end
 
 # The whole per-voxel step for voxel offset q with in-world coordinates (i, j, k).
 # θ[θo + 1 : θo + 3C²+8C] is the rule.
-@inline function update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, θo::Int32, ::Val{C}, fm::Val, ::Val{shell2}, p::Physics{T},
+@inline function update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, θo::Int32, ::Val{C}, fm::Val, shell2::Bool, p::Physics{T},
                                Nx::Int32, Ny::Int32, Nz::Int32, q::Int32,
-                               i::Int32, j::Int32, k::Int32) where {C,T,shell2}
+                               i::Int32, j::Int32, k::Int32) where {C,T}
     o = Int32(1)
     CC = Int32(C * C)
     NxNy = Nx * Ny
@@ -224,7 +224,7 @@ end
 # barrier; padded lanes do no work.
 @kernel unsafe_indices=true function update_kernel!(h2, s2, n2, w2, L, @Const(h), @Const(s), @Const(n),
         @Const(w), @Const(θ), ::Val{C}, fm::Val, p::Physics{T}, Nx::Int32, Ny::Int32, Nz::Int32,
-        B::Int32, Bθ::Int32, sh::Val) where {C,T}
+        B::Int32, Bθ::Int32, shell2::Bool) where {C,T}
     lθ = @localmem T (2 * (3C * C + 8C),)
     # (values are recomputed after the barrier: KA's CPU backend splits the body there)
     P = Int32(3C * C + 8C)
@@ -248,7 +248,7 @@ end
     b0 = min((q - li) ÷ (Nx * Ny * Nz), B - Int32(1))
     if q < Nx * Ny * Nz * B
         b, i, j, k = voxel_coords(q, Nx, Ny, Nz)
-        update_voxel!(h2, s2, n2, w2, L, h, s, n, w, lθ, (b - b0) * P, Val(C), fm, sh, p,
+        update_voxel!(h2, s2, n2, w2, L, h, s, n, w, lθ, (b - b0) * P, Val(C), fm, shell2, p,
                       Nx, Ny, Nz, q, i, j, k)
     end
 end
@@ -308,7 +308,7 @@ function launch_update!(be, h2, s2, n2, w2, L, h, s, n, w, θ, ::Val{C}, fm::Val
     # Flat vectors: World and WorldBatch then share one kernel specialization.
     v = vec
     update_kernel!(be, wg)(v(h2), v(s2), v(n2), v(w2), v(L), v(h), v(s), v(n), v(w), v(θ), Val(C), fm, p,
-                           X, Y, Z, B, Bθ, Val(shell2); ndrange=cld(total, wg) * wg)
+                           X, Y, Z, B, Bθ, shell2; ndrange=cld(total, wg) * wg)
 end
 
 """Whether a rule uses the second shell (any nonzero Wnb2)."""
