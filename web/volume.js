@@ -170,7 +170,9 @@
     gl.uniform3fv(U.solidC, optics.solid); gl.uniform3fv(U.pigC, optics.pigment); gl.uniform3fv(U.pigAbs, optics.pigment_absorb);
     gl.uniform1f(U.tanh_, Math.tan(17 * Math.PI / 180)); gl.uniform1f(U.aspect, w / h);
     gl.uniform1f(U.density, Math.pow(10, +$('density').value));
-    gl.uniform1f(U.exposure, Math.pow(2, +$('exposure').value));
+    // a specimen's lit exposure (often high for dim interiors) is not applied to diagnostics
+    const diagScale = $('mode').value === 'lit' ? 1 : 1 / (optics.exposure || 1);
+    gl.uniform1f(U.exposure, Math.pow(2, +$('exposure').value) * diagScale);
     gl.uniform1f(U.alphaS, phys.alpha_s); gl.uniform1f(U.alphaP, phys.alpha_p);
     gl.uniform1f(U.pigFloor, optics.pig_floor); gl.uniform1f(U.stain, optics.stain); gl.uniform1f(U.Lhi, index.hi.L || phys.L0);
     gl.uniform1i(U.mode, modes[$('mode').value]);
