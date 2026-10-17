@@ -347,3 +347,49 @@ qualified; up to three were picked per β, fastest first:
   peaks at λ_wave 7.54. Median |Δrate| over the 16 fastest modes is 2.4e-3 (1.3e-2
   over the shorter window [2/λ, 7/λ]: transients between nearby eigenvalues).
 - Tested on a 32² world in `test/analysis.jl`.
+
+## Stencil anisotropy of the tied coupling
+
+Lane C's tied runs lock to the axes because of the stencil, not the material. In
+the current axis-only ring + axis-only shell, growth at fixed `|k*|` peaks on the
+in-plane diagonal (φ = 45°) and is negative along the axes. Two diagonal modes
+`(k,k)` and `(k,−k)` sum to `cos kx · cos ky`: an axis-aligned square weave. In 3D
+the oblique mode (θ 60°, φ 45°) grows faster than any horizontal one (tied-10: 1.71
+against 1.09), so a slab prefers oblique structure.
+
+19-point symbols (6 axis neighbours at weight 1/3, 12 edge diagonals `(±1,±1,0)` at
+weight 1/6; same small-k normalization as the ring, `κ ≈ |k|²`):
+
+```
+κ_iso(k)  = (2/3) Σᵢ (1 − cos kᵢ) + (2/3) Σ_{i<j} (1 − cos kᵢ cos kⱼ)
+κ2_iso(k) = κ_iso(2k)            # the same stencil dilated by 2 (offsets (±2,0,0), (±2,±2,0), …)
+m̂ = −g* (κ_ring(k) W_nb + κ_shell(k) W_nb2) δh,   transport keeps κ = 2Σ(1 − cos kᵢ)
+```
+
+(max − min)/mean of λ at fixed `|k*|`, over in-plane φ and 3D polar angles θ
+(`aniso*.jl` probes, frozen light; same β as the recipe unless stated):
+
+| stencil | tied-10 (nb1 12, β 0.32) | tied-03 (nb1 16, β 0.31) |
+|---|---|---|
+| (a) axis ring + axis shell (current) | λ_wave 6.6 at 45°, λ* 1.09; in-plane 309%, 3D 456% | 7.0 at 45°, 0.72; 326%, 495% |
+| (b) 19-pt ring + 19-pt shell | λ_wave 9.0 at 45°, λ* 0.19; 23%, 3D 23% | 9.6, 0.018; 145% (near onset) |
+| (c) axis ring + 19-pt shell | λ_wave 9.3 at 0°, λ* 0.15; 74%, 3D 120% | 9.9, 0.004; marginal |
+| (b) with β retuned to 0.40 | λ_wave 6.6, λ* 3.0; 11.7%, 3D 11.7% | 6.6, 3.0; 11.0% |
+| (b), β 0.50 / 0.75 | 5.5 / 4.4 cells; 14.8% / 24.0% | 14.3% / 23.7% |
+| 19-pt ring + Gaussian shell σ 1, radius 3 (122 points) | λ_wave 6.4; 11.0%, 3D 13.0% | 6.9; 11.7%, 14.0% |
+
+k* does shift. The 19-point shell is "softer" at the same β (longer wavelength,
+much weaker growth), so β has to be retuned: β 0.40 with (b) restores the 6.6-cell
+wavelength with three times the growth of the current β 0.32.
+
+**Build (b), with β ≈ 0.4.** It removes the gross anisotropy: the absolute spread
+falls 30–50×, and the 3D spread equals the in-plane one, so oblique modes no longer
+win. (c) is worse than (b): an isotropic shell over an anisotropic ring leaves the
+ring's k⁴ anisotropy uncancelled and turns the preference to the axes. None of the
+stencils tested reaches 5%. With a tied coupling the k² terms of ring and shell
+nearly cancel (`w1 + 4w2 ≈ 0` near β = ¼), and the pattern lives in the k⁴ and k⁶
+terms, where any radius-2 lattice stencil is anisotropic at `|2k| ≈ 1.3–1.9`. The
+residual 11% favours the diagonal; a Gaussian shell over a radius-3 ball does no
+better. Getting under 5% would need shell weights fitted for isotropy over the band
+`|k| ∈ [0.5, 1.2]`, or a spectral coupling. Neither is worth building before (b) has
+been seen.
