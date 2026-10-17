@@ -18,7 +18,7 @@ const RUN_DEFAULTS = Dict{String,Any}("N" => 128, "steps" => 3000,
 
 function parse_override(kv)
     k, v = split(kv, "="; limit=2)
-    k => something(tryparse(Int, v), tryparse(Float64, v), String(v))
+    k => something(tryparse(Int, v), tryparse(Float64, v), tryparse(Bool, v), String(v))
 end
 
 function load_recipe(path, overrides=Pair{String,Any}[])
@@ -46,6 +46,11 @@ end
 
 # Metal must be loaded at top level (before `main` runs) so its methods are in the
 # world the run executes in; `using` inside a function leaves step! on stale methods.
+# `fast = false` in a recipe (or fast=false on the command line) turns off the GPU
+# fast-math path. Metal's fast tanh overflows to NaN for large |u| (e.g. the tied
+# two-shell recipes with nb1 = 16), so those need it off.
+stepf(wd, rc) = haskey(rc.raw, "fast") ? step!(wd, rc.rule, rc.p; fast=Bool(rc.raw["fast"])) : step!(wd, rc.rule, rc.p)
+
 select_backend(name) = name == "cpu" ? CPU() : name == "metal" ? Main.Metal.MetalBackend() : error("unknown backend $name")
 
 function main(recipe_path, outdir, overrides=Pair{String,Any}[])
@@ -70,7 +75,7 @@ function main(recipe_path, outdir, overrides=Pair{String,Any}[])
                 (total_mass(wd) - m0) / m0, s.step / max(time() - t0, 1e-9)); flush(stdout))
     record!(rec, wd); report(wd)
     for _ in 1:steps
-        wd = step!(wd, rc.rule, rc.p)
+        wd = stepf(wd, rc)
         record!(rec, wd) && report(wd)
     end
     record!(rec, wd; force=true)

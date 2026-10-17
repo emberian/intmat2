@@ -39,7 +39,7 @@ function film(recipe, optf, outdir, overrides)
         f % 20 == 0 && @printf("frame %d step %d mean_s %.4f light_bottom %.4f\n", f, s.step, s.mean_s, s.light_bottom)
         f == nframes && break
         for _ in 1:every
-            wd = step!(wd, rc.rule, rc.p)
+            wd = stepf(wd, rc)
         end
     end
     close(log)
