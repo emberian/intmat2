@@ -277,8 +277,15 @@ function evaluate_one(rule::Rule{C,T}, p::Physics{T}, cfg::EvalConfig) where {C,
     obj = fin ? (persistence=persistence(trace), structure=st.score, temporal=tm.score,
                  memory_s=mem.memory_s, memory_h=mem.memory_h,
                  recovery=recovery(sc, se, mask, s_end), light=lb.score) : BAD
+    # explicit-Euler check (lane A): a rule whose linearization needs dt < p.dt is
+    # scored on a numerical artefact; `objvec` treats it as infeasible.
+    sdt = try
+        Float64(Analysis.stable_dt(rule, p; M=cfg.n0))
+    catch
+        NaN
+    end
     last = trace[end]
-    diag = (mean_s=last.mean_s, std_s=last.std_s, solid_frac=last.solid_frac, mean_n=last.mean_n,
+    diag = (stable_dt=sdt, dt_ok=!(sdt < Float64(p.dt)), mean_s=last.mean_s, std_s=last.std_s, solid_frac=last.solid_frac, mean_n=last.mean_n,
             mean_w=last.mean_w, light_bottom=last.light_bottom, mean_abs_h=last.mean_abs_h,
             std_h=last.std_h, mass_drift=last.mass - trace[1].mass, struct_frac=st.frac,
             struct_rms=st.rms, lambda=st.lambda, structure_top=sttop.score, lambda_top=sttop.lambda, t_fixed=tm.fixed, t_periodic=tm.periodic, photic=lb.photic,
@@ -398,7 +405,10 @@ end
 """Block boundaries of θ (Wself, Wnb, Win, b, vdep, vero, vpig) for block crossover."""
 rule_blocks(C) = (o = cumsum([0, C * C, C * C, 4C, C, C, C, C]); [o[i]+1:o[i+1] for i in 1:7])
 
-objvec(r::NamedTuple, objs) = Float64[clamp(getfield(r, o), 0.0, 1.0) for o in objs]
+"""Selection vector in [0,1]; all zeros (dominated by every feasible rule) when the
+rule fails the explicit-Euler check `dt_ok` (absent in old archives ⇒ feasible)."""
+objvec(r::NamedTuple, objs) = get(r, :dt_ok, true) ? Float64[clamp(getfield(r, o), 0.0, 1.0) for o in objs] :
+                                                    zeros(length(objs))
 
 """
     evolve(C, p, cfg; mode=:nsga, pop=48, gens=8, seed=1, sigma0=0.3, init=nothing,
@@ -408,7 +418,9 @@ objvec(r::NamedTuple, objs) = Float64[clamp(getfield(r, o), 0.0, 1.0) for o in o
 (rank, crowding), block-uniform crossover with probability 0.5, self-adaptive
 log-normal step `σ' = σ exp(0.2 N)`, `z' = z + σ' N`. `mode=:random`: every evaluation
 is a fresh `random_rule` draw (z ~ N(0,1)) — the equal-budget baseline. `scales`
-(keywords of `random_rule`: self, nb, inp, bias, read) sets the prior θ = scale ⊙ z. `init`: optional
+(keywords of `random_rule`: self, nb, inp, bias, read) sets the prior θ = scale ⊙ z.
+`sampler(rng) -> θ` replaces the Gaussian prior for the first population and for
+`:random` (e.g. `Analysis.turing_prone_rule`); `scales` still normalizes mutation steps. `init`: optional
 vector of θ to seed the first population (remaining slots are random). Every evaluated
 individual is passed to `log` as a record. `cache` (θ → result) is consulted before
 evaluating and filled after, so runs sharing a seed share their identical first
@@ -416,9 +428,10 @@ population; cached individuals still count toward the evaluation budget. Returns
 """
 function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, gens=8, seed=1,
                 sigma0=0.3, init=nothing, eval=evaluate, objectives=SELECT_OBJECTIVES,
-                log=rec -> nothing, cache=Dict{Vector{Float64},Any}(), scales=(;)) where {T}
+                log=rec -> nothing, cache=Dict{Vector{Float64},Any}(), scales=(;), sampler=nothing) where {T}
     rng = MersenneTwister(seed)
     scale = rule_scale(C; scales...); blocks = rule_blocks(C); np = length(scale)
+    draw() = sampler === nothing ? randn(rng, np) : Float64.(sampler(rng)) ./ scale
     archive = NamedTuple[]
     function run_batch!(zs, sigmas, parents, gen)
         rules = [Rule{C,T}(T.(scale .* z)) for z in zs]
@@ -438,7 +451,7 @@ function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, 
         end
         length(archive)-length(res)+1:length(archive)
     end
-    z0 = [randn(rng, np) for _ in 1:pop]
+    z0 = [draw() for _ in 1:pop]
     if init !== nothing
         for (i, θ) in enumerate(init[1:min(end, pop)])
             z0[i] = Float64.(θ) ./ scale
@@ -447,7 +460,7 @@ function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, 
     P = collect(run_batch!(z0, fill(sigma0, pop), fill(Int[], pop), 0))
     for g in 1:gens-1
         if mode == :random
-            run_batch!([randn(rng, np) for _ in 1:pop], fill(0.0, pop), fill(Int[], pop), g)
+            run_batch!([draw() for _ in 1:pop], fill(0.0, pop), fill(Int[], pop), g)
             continue
         end
         FP = reduce(hcat, [objvec(archive[i].res, objectives) for i in P])

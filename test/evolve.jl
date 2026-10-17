@@ -23,6 +23,8 @@ using Intmat2: EvalConfig, evaluate, evaluate_one, structure, temporal, persiste
         @test isfinite(r[k])
     end
     @test all(abs(r.mass_drift) < 1e-3 for r in rs)
+    @test all(haskey(r, :dt_ok) for r in rs) && rs[2].dt_ok
+    @test Intmat2.objvec(merge(rs[2], (dt_ok=false,)), Intmat2.SELECT_OBJECTIVES) == zeros(5)
     # structure: a lateral stripe of wavelength 8 is all in band; white noise is ~0
     s = [0.3 + 0.2 * sin(2π * i / 8) for i in 1:32, j in 1:32, k in 1:4]
     st = structure(s)

@@ -27,7 +27,7 @@ arg(k, default) = haskey(A, k) ? (default isa String ? A[k] : parse(typeof(defau
 # --- correlate mode: does lane A's linear analysis predict the measured structure?
 #   julia --project=. bin/evolve.jl --correlate results/evolve-a.jsonl,results/evolve-b.jsonl --out name
 if haskey(A, "correlate")
-    using Intmat2.Analysis: steady_state, dispersion, classify
+    using Intmat2.Analysis: steady_state, dispersion, classify, stable_dt
     numfield(line, key) = (m = match(Regex("\"$key\":(-?[0-9.eE+-]+|null)"), line);
                            m === nothing || m[1] == "null" ? NaN : parse(Float64, m[1]))
     ranks(v) = (o = sortperm(v); r = similar(v, Float64); r[o] = 1:length(v); r)
@@ -44,7 +44,8 @@ if haskey(A, "correlate")
             ss = steady_state(rule, p64; M=numfield(line, "n0"), depth=1)
             d = ss.converged ? dispersion(rule, p64, ss) : nothing
             cls = d === nothing ? :unconverged : classify(d)
-            push!(rows, (file=basename(f), id=Int(numfield(line, "id")), cls=cls,
+            sdt = ss.converged ? Float64(stable_dt(rule, p64; M=numfield(line, "n0"), ss=ss)) : NaN
+            push!(rows, (file=basename(f), id=Int(numfield(line, "id")), cls=cls, stable_dt=sdt, dt=p64.dt,
                          lambda_max=d === nothing ? NaN : d.lambda_max, re0=d === nothing ? NaN : d.re0,
                          wavelength=d === nothing ? NaN : d.wavelength,
                          structure=numfield(line, "structure"), structure_top=numfield(line, "structure_top"), lam_meas=numfield(line, "lambda"),
@@ -63,6 +64,8 @@ if haskey(A, "correlate")
            spearman_structure_vs_lambda_max=spearman(S, [r.lambda_max for r in ok]),
            spearman_structure_vs_finite_excess=spearman(S, finite_growth),
            spearman_structure_top_vs_lambda_max=(St = [r.structure_top for r in ok]; all(isfinite, St) ? spearman(St, [r.lambda_max for r in ok]) : NaN),
+           frac_dt_unstable=mean(r.stable_dt < r.dt for r in ok),
+           unstable_dt_ids=[(file=r.file, id=r.id, stable_dt=r.stable_dt, structure=r.structure) for r in ok if r.stable_dt < r.dt],
            by_class=bycls,
            turing_structured_wavelength_pred_vs_meas=[(id=r.id, file=r.file, pred=r.wavelength, meas=r.lam_meas) for r in tur])
     open(joinpath(@__DIR__, "..", "results", "evolve-$(get(A, "out", "atlas"))-correlation.json"), "w") do io
@@ -77,6 +80,7 @@ if haskey(A, "correlate")
     for (c, v) in bycls
         @printf("%-12s n=%4d mean structure %.3f  frac>0.1 %.3f\n", c, v.n, v.mean_structure, v.frac_structured)
     end
+    @printf("stable_dt < dt for %.3f of analyzed rules\n", out.frac_dt_unstable)
     @printf("spearman(structure, max Re λ) = %.3f   (vs finite-k excess) = %.3f\n",
             out.spearman_structure_vs_lambda_max, out.spearman_structure_vs_finite_excess)
     exit(0)
@@ -103,6 +107,11 @@ pop = arg("pop", 48); gens = arg("gens", 8); seed = arg("seed", 1)
 modes = Symbol.(split(arg("modes", "random,nsga"), ","))
 # rule prior: --scales self=0.5,nb=0.2,inp=1,bias=0.1,read=2 (random_rule keywords)
 scales = haskey(A, "scales") ? (; (Symbol(k) => parse(Float64, v) for (k, v) in (split(kv, "=") for kv in split(A["scales"], ",")))...) : (;)
+sampler = nothing
+if arg("prior", "gauss") == "prone"     # lane A's Turing-prone sampler (Analysis.turing_prone_rule)
+    @eval using Intmat2.Analysis: turing_prone_rule
+    sampler = rng -> vec(Base.invokelatest(turing_prone_rule, rng, C, Float64))
+end
 init = nothing
 if haskey(A, "init")      # comma-separated recipe files whose θ seed the first population
     init = [Float64.(vec(read_recipe(f)[1])) for f in split(A["init"], ",")]
@@ -208,7 +217,7 @@ if haskey(A, "classify-prior")
 end
 
 summary = Dict{String,Any}("command" => cmd, "commit" => commit, "run" => run, "physics" => p,
-                           "eval" => cfgnt, "pop" => pop, "gens" => gens, "seed" => seed, "scales" => scales,
+                           "eval" => cfgnt, "pop" => pop, "gens" => gens, "seed" => seed, "scales" => scales, "prior" => arg("prior", "gauss"),
                            "select_objectives" => collect(SELECT_OBJECTIVES), "modes" => Dict{String,Any}())
 archives = Dict{Symbol,Any}()
 cache = Dict{Vector{Float64},Any}()
@@ -226,7 +235,7 @@ for mode in modes
         println(io, js(line)); flush(io)
     end
     arch, P = evolve(C, p, cfg; mode=mode, pop=pop, gens=gens, seed=seed,
-                     init=mode == :nsga ? init : nothing, log=log, cache=cache, scales=scales)
+                     init=mode == :nsga ? init : nothing, log=log, cache=cache, scales=scales, sampler=sampler)
     close(io)
     wall = time() - t0
     F = reduce(hcat, [objvec(a.res, SELECT_OBJECTIVES) for a in arch])
