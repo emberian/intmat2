@@ -9,14 +9,16 @@ module Prev
     include(joinpath(@__DIR__, "step_1f4a9e8.jl"))
 end
 be = MetalBackend()
-r = tied_rule(MersenneTwister(1), 8, Float32; nb1=2, beta=0.4); p = Physics{Float32}(dt=0.02)
+r2 = tied_rule(MersenneTwister(1), 8, Float32; nb1=2, beta=0.4); r1 = gate_rule(); p = Physics{Float32}(dt=0.02)
 for N in (128, 256)
-    a = run!(light!(gate_world(be, N), r, p), r, p, 3); b = copy(a)
+    w0 = run!(light!(gate_world(be, N), r1, p), r1, p, 3)
+    a = copy(w0); b = copy(w0); c = copy(w0)
     n = N == 128 ? 200 : 30
-    bn = 0.0; bo = 0.0
+    bp = 0.0; b1 = 0.0; b2 = 0.0
     for _ in 1:5
-        t = @elapsed (a = run!(a, r, p, n)); bn = max(bn, n / t)
-        t = @elapsed (for _ in 1:n; b = Prev.step!(b, r, p; sync=false); end; KA.synchronize(be)); bo = max(bo, n / t)
+        t = @elapsed (for _ in 1:n; b = Prev.step!(b, r1, p; sync=false); end; KA.synchronize(be)); bp = max(bp, n / t)
+        t = @elapsed (a = run!(a, r1, p, n)); b1 = max(b1, n / t)
+        t = @elapsed (c = run!(c, r2, p, n)); b2 = max(b2, n / t)
     end
-    @printf("N=%d  one ring %.1f steps/s  two shells %.1f steps/s  cost %.1f%%\n", N, bo, bn, 100 * (bo / bn - 1))
+    @printf("N=%d  pre-shell step %.1f  current, one-ring rule %.1f  current, two-shell rule %.1f steps/s\n", N, bp, b1, b2)
 end
