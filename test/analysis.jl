@@ -1,4 +1,4 @@
-using Intmat2, Test, Random, LinearAlgebra, Statistics, KernelAbstractions
+using Intmat2, Test, Random, LinearAlgebra, Statistics, KernelAbstractions, TOML
 # Fixtures were characterized at the original absorption alpha_s=alpha_p=2.0; the
 # Physics defaults later dropped to 0.05/0.1, so every fixture sets them explicitly.
 using Intmat2.Analysis
@@ -178,4 +178,40 @@ end
     @test classify(d3) == :turing && 3.5 < d3.wavelength < 7
     ssa = steady_state(r, c.p; M=c.M, L_ambient=0.5)
     @test ssa.L > 0.5 && ssa.converged
+end
+
+@testset "analysis: tied two-shell recipe vs the real stepper" begin
+    t = TOML.parsefile(joinpath(@__DIR__, "..", "recipes", "tied-20261016-03.toml"))
+    C = t["C"]; r = Rule{C,Float64}(Float64.(t["theta"]))
+    @test r == tied_rule(MersenneTwister(t["seed"]), C, Float64; nb1=t["nb1"], beta=t["beta"],
+                         inp=t["rule_scales"]["inp"], read=t["rule_scales"]["read"])
+    p = Physics{Float64}(; (Symbol(k) => Float64(v) for (k, v) in t["physics"])...)
+    ss = steady_state(r, p; M=t["n0"])
+    # one step on a single cos mode: the two-shell stepmap is exact
+    Nx, mm = 16, 3; kx = 2π * mm / Nx
+    A = stepmap(r, p, ss, kappa(kx, 0.0); κ2=kappa2(kx, 0.0), light=:local)
+    v = randn(MersenneTwister(4), C + 3); ε = 1e-7
+    wd = World(CPU(), r, (Nx, 2, 1); T=Float64, h_scale=0.0)
+    AN.set_uniform!(wd, ss)
+    for i in 1:Nx
+        φ = ε * cos(kx * (i - 1))
+        wd.h[:, i, :, 1] .+= φ .* v[1:C]
+        wd.n[i, :, 1] .+= φ * v[C+1]; wd.s[i, :, 1] .+= φ * v[C+2]; wd.w[i, :, 1] .+= φ * v[C+3]
+    end
+    wd = step!(Intmat2.light!(wd, r, p), r, p)
+    proj(f) = 2 / Nx * sum(f[i] * cos(kx * (i - 1)) for i in 1:Nx)
+    out = vcat([proj(wd.h[cc, :, 1, 1] .- ss.h[cc]) for cc in 1:C],
+               proj(wd.n[:, 1, 1] .- ss.n), proj(wd.s[:, 1, 1] .- ss.s), proj(wd.w[:, 1, 1] .- ss.w))
+    @test norm(out ./ ε .- A * v) < 1e-6 * norm(A * v)
+    # growth: fastest lattice mode of a 32² world, measured over [5/λ, 10/λ]
+    P = AN.Pencil(r, p, ss; light=:local)
+    λ = dispersion(P).lambda_max
+    N = 32
+    Kl = AN.lattice_kappa(N, N); K2 = AN.lattice_kappa2(N, N)
+    pred = [AN.map_rate(P, Kl[a, b], K2[a, b]) for a in 1:N, b in 1:N]
+    m = AN.measure_mode_rates(r, p, ss; N, t1=5 / λ, t2=10 / λ, amp=1e-12)
+    mask = trues(N, N); mask[1, 1] = false
+    jp = argmax(ifelse.(mask, pred, -Inf)); jm = argmax(ifelse.(mask, m.rates, -Inf))
+    @test pred[jm] ≈ pred[jp]                       # the measured fastest mode is a predicted fastest one
+    @test m.rates[jm] ≈ pred[jp] rtol = 0.02
 end

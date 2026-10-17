@@ -289,3 +289,61 @@ full learnable C×C matrix (`3C² + 8C` parameters), `L_ambient` a Physics field
 2π/acos(1/(4β)) on an axis); evolution can then break the tie. Cost: six more
 neighbour loads of `h` and `s` per voxel. `stable_dt` does not yet include `W_nb2`;
 with activity growth of 1–6 per unit time, recheck dt against the new stepmap.
+
+## Tied two-shell rules (adopted)
+
+`Rule.Wnb2` and `Physics.L_ambient` are now part of the step (69b4888) and of the
+main analysis path. `jacobian`/`stepmap` take the shell symbol `κ2 = κ(2k)`
+(keyword `κ2`). `Pencil` is affine in both symbols. `dispersion` switches to a
+horizontal wavevector scan (`0 ≤ ky ≤ kx ≤ π`, step π/48, refined) whenever
+`W_nb2 ≠ 0`, and then reports `wavelength = 2π/|k*|`. `stable_dt` scans the 3D
+wavevector grid (step π/16) for two-shell rules. `steady_state` uses `p.L_ambient`.
+One-ring rules take exactly the old path.
+
+The fastest mode of a tied rule lies on the diagonal (`kx = ky`, each at
+`cos k = 1/(4β)`), so `λ_wave` is √2 shorter than the axis formula. That gives
+`λ_wave` 4.2 at β 0.5, 5.0 at β 0.4, 6.6 at β 0.32 and 8.5 at β 0.29. Growth near
+β → ¼ scales as `nb1 (4β−1)²`, so 6–12 cells needs nb1 12–16.
+
+`stable_dt` survey (`bin/tied.jl` → `results/tied-20261016.json`): C = 8, default
+Physics (α_s 0.05, α_p 0.1), M 0.5, 24 seeds per cell, `tied_rule` default scales.
+
+| nb1 | β | Turing | median stable dt [min, max] | Turing λ_wave | median λ |
+|---|---|---|---|---|---|
+| 1 | 0.3 / 0.4 / 0.5 | 0 / 0.04 / 0.25 | 0.185 [0.007, 0.290] | — / 5.0 / 4.2 | — / 0.060 / 0.18 |
+| 2 | 0.3 / 0.4 / 0.5 | 0 / 0.21 / 0.67 | 0.097 [0.007, 0.155] | — / 5.0 / 4.2 | — / 0.17 / 0.73 |
+| 4 | 0.3 / 0.4 / 0.5 | 0 / 0.58 / 0.88 | 0.050 [0.015, 0.081] | — / 5.0 / 4.2 | — / 0.55 / 2.3 |
+
+Stable dt falls as ≈ 0.2/nb1 (explicit Euler on the coupling at 3D grid scale) and
+hardly depends on β. The package default dt 0.05 is unstable for nb1 ≳ 4.
+
+Recipes `recipes/tied-20261016-01…10.toml` (C 8, `theta` = `vec(rule)` with
+`W_nb2`; N 128, Nz 48, n0 0.5, α_s 0.05, α_p 0.1; dt = min(0.05, 0.8 stable_dt);
+steps = 8 e-folds). All are Turing at depths 1, 24 and 48 with the same wavelength.
+They came from 600 candidates over nb1 {6,8,12,16} × β {0.29…0.32}, of which 51
+qualified; up to three were picked per β, fastest first:
+
+| recipe | nb1 | β | λ_max | λ_wave | stable dt | dt | steps |
+|---|---|---|---|---|---|---|---|
+| 01 | 16 | 0.29 | 0.226 | 8.5 | 0.0091 | 0.0073 | 4836 |
+| 02 | 16 | 0.30 | 0.557 | 7.5 | 0.0086 | 0.0069 | 2087 |
+| 03 | 16 | 0.31 | 0.723 | 7.1 | 0.0108 | 0.0086 | 1281 |
+| 04 | 16 | 0.32 | 1.746 | 6.6 | 0.0069 | 0.0055 | 833 |
+| 05 | 16 | 0.30 | 0.382 | 7.5 | 0.0122 | 0.0098 | 2150 |
+| 06 | 16 | 0.31 | 0.340 | 7.1 | 0.0099 | 0.0080 | 2958 |
+| 07 | 16 | 0.32 | 1.192 | 6.6 | 0.0091 | 0.0073 | 920 |
+| 08 | 16 | 0.30 | 0.265 | 7.5 | 0.0112 | 0.0089 | 3385 |
+| 09 | 16 | 0.31 | 0.322 | 7.1 | 0.0138 | 0.0111 | 2246 |
+| 10 | 12 | 0.32 | 1.086 | 6.6 | 0.0102 | 0.0081 | 907 |
+
+**Validation against the two-shell `step!`** (tied-03, CPU Float64, one layer,
+`light=:local`):
+- One step on a single cos mode matches the two-shell `stepmap` to 1.2–1.7e-10
+  relative. The one-ring map misses it by 1–8%.
+- 64×64×1 world from the steady state plus noise 1e-12, rates over t ∈ [5/λ, 10/λ]
+  (1615 steps). The fastest measured mode is the predicted lattice mode
+  (λ_wave 7.54): measured rate 0.6942 against predicted 0.6912. The continuous
+  optimum is 0.7162 at λ_wave 7.05, off the lattice. Power in both `s` and `h₁`
+  peaks at λ_wave 7.54. Median |Δrate| over the 16 fastest modes is 2.4e-3 (1.3e-2
+  over the shorter window [2/λ, 7/λ]: transients between nearby eigenvalues).
+- Tested on a 32² world in `test/analysis.jl`.
