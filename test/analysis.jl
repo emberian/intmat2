@@ -215,3 +215,36 @@ end
     @test pred[jm] ≈ pred[jp]                       # the measured fastest mode is a predicted fastest one
     @test m.rates[jm] ≈ pred[jp] rtol = 0.02
 end
+
+@testset "analysis: isotropic stencil recipe vs the real stepper (one layer)" begin
+    t = TOML.parsefile(joinpath(@__DIR__, "..", "recipes", "iso-20261016-01.toml"))
+    C = t["C"]; r = Rule{C,Float64}(Float64.(t["theta"]))
+    p = Physics{Float64}(; (Symbol(k) => (k == "stencil" ? Int32(v) : Float64(v)) for (k, v) in t["physics"])...)
+    @test p.stencil == 1
+    ss = steady_state(r, p; M=t["n0"])
+    # a one-layer world sees the planar form of the 19-point stencil
+    Nx, mm = 16, 3; kx = 2π * mm / Nx
+    A = stepmap(r, p, ss, kappa_iso_planar(kx, kx); κ2=kappa_iso_planar(2kx, 2kx), κD=kappa(kx, kx), light=:local)
+    v = randn(MersenneTwister(4), C + 3); ε = 1e-7
+    wd = World(CPU(), r, (Nx, Nx, 1); T=Float64, h_scale=0.0)
+    AN.set_uniform!(wd, ss)
+    for i in 1:Nx, j in 1:Nx
+        φ = ε * cos(kx * (i - 1) + kx * (j - 1))
+        wd.h[:, i, j, 1] .+= φ .* v[1:C]
+        wd.n[i, j, 1] += φ * v[C+1]; wd.s[i, j, 1] += φ * v[C+2]; wd.w[i, j, 1] += φ * v[C+3]
+    end
+    wd = step!(Intmat2.light!(wd, r, p), r, p)
+    proj(f) = 2 / Nx^2 * sum(f[i, j] * cos(kx * (i - 1) + kx * (j - 1)) for i in 1:Nx, j in 1:Nx)
+    out = vcat([proj(wd.h[cc, :, :, 1] .- ss.h[cc]) for cc in 1:C],
+               proj(wd.n[:, :, 1] .- ss.n), proj(wd.s[:, :, 1] .- ss.s), proj(wd.w[:, :, 1] .- ss.w))
+    @test norm(out ./ ε .- A * v) < 1e-6 * norm(A * v)
+    P = AN.Pencil(r, p, ss; light=:local, planar=true)
+    λ = dispersion(P).lambda_max
+    N = 32
+    pred = AN.lattice_rates(P, N, N)
+    m = AN.measure_mode_rates(r, p, ss; N, t1=5 / λ, t2=10 / λ, amp=1e-12)
+    mask = trues(N, N); mask[1, 1] = false
+    jp = argmax(ifelse.(mask, pred, -Inf)); jm = argmax(ifelse.(mask, m.rates, -Inf))
+    @test pred[jm] ≈ pred[jp] rtol = 1e-6
+    @test m.rates[jm] ≈ pred[jp] rtol = 0.01
+end

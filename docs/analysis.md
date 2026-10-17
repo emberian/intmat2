@@ -393,3 +393,54 @@ residual 11% favours the diagonal; a Gaussian shell over a radius-3 ball does no
 better. Getting under 5% would need shell weights fitted for isotropy over the band
 `|k| ∈ [0.5, 1.2]`, or a spectral coupling. Neither is worth building before (b) has
 been seen.
+
+## Isotropic stencil (`Physics.stencil = 1`)
+
+The analysis honours `p.stencil`. The ring symbol is `kappa_iso(k)` and the shell is
+`kappa_iso(2k)` (formulas above); transport keeps `κ = 2Σ(1 − cos kᵢ)`. `Pencil` now
+carries separate ring, shell and transport matrices, and `dispersion` and
+`stable_dt` scan wavevectors whenever `stencil = 1` or `W_nb2 ≠ 0`.
+
+**One-layer worlds see a different stencil.** The step keeps the 1/3, 1/6 weights
+and drops neighbours cut by the z walls. For an in-plane mode, the dropped
+`(±1, 0, ±1)`-type edges contribute `1 − cos kx`, not 0. So an `N×N×1` world (or a
+wall layer) runs the planar symbol
+`kappa_iso_planar(k) = (2/3)[(1−cos kx) + (1−cos ky) + (1−cos kx cos ky)]`
+(`≈ (2/3)|k|²`). That symbol is anisotropic: axis-to-diagonal 2:1, where the
+isotropic 2D 9-point stencil needs 4:1. `Pencil(...; planar=true)` uses it. A slab's
+interior layers see the full 3D `kappa_iso`.
+
+Recipes `recipes/iso-20261016-01…06.toml` (`bin/iso.jl` → `results/iso-20261016.json`):
+tied rules with stencil 1, C 8, n0 0.5, α 0.05/0.1, N 128, Nz 48, dt = 0.8 stable dt,
+8 e-folds, explicit theta. Turing at depths 1/24/48 (bulk symbol); 13 of 400
+candidates qualified, and none at β 0.38. Spread = (max − min)/mean of λ over
+in-plane φ at `|k*|` (3D polar spread is identical):
+
+| recipe | nb1 | β | λ_max | λ_wave | stable dt | dt | steps | spread |
+|---|---|---|---|---|---|---|---|---|
+| 01 | 6 | 0.40 | 0.799 | 6.62 | 0.075 | 0.060 | 168 | 12.6% |
+| 02 | 6 | 0.42 | 1.175 | 6.31 | 0.053 | 0.043 | 160 | 16.2% |
+| 03 | 6 | 0.40 | 0.523 | 6.62 | 0.073 | 0.058 | 264 | 18.6% |
+| 04 | 6 | 0.42 | 1.163 | 6.31 | 0.057 | 0.045 | 152 | 17.8% |
+| 05 | 6 | 0.40 | 0.503 | 6.62 | 0.057 | 0.046 | 347 | 30.3% |
+| 06 | 6 | 0.42 | 0.867 | 6.31 | 0.056 | 0.045 | 206 | 24.3% |
+
+The isotropic stencil also relaxes dt about sixfold against the axis-stencil tied
+recipes (stable dt 0.05–0.075 against 0.007–0.014), because its weight is spread
+over more neighbours.
+
+**Validation** (iso-01, CPU Float64, 64×64×1, `light=:local`, planar symbol):
+- One step on a diagonal cos mode matches the planar `stepmap` to 3.6e-10. The
+  axis-stencil map misses it by 10%, and the bulk `kappa_iso` map by 1.4%.
+- Growth over t ∈ [5/λ, 10/λ] (463 steps): the fastest measured mode is a predicted
+  fastest lattice mode (λ_wave 7.11, on an axis), rate 0.3575 against 0.3575. The
+  median |Δrate| over the 44 fastest modes is 1.9e-4. `s` power peaks at
+  λ_wave 7.11.
+- Per-angle spread on the lattice annulus `|k*| ± 0.06` (60 modes, 0–90°): predicted
+  40.5%, measured 40.5%. That is the one-layer stencil. For the same rule the bulk
+  stencil gives λ* 0.80 at 6.62 cells with a 12.6% spread, and the axis stencil
+  gives >300%.
+- Tested on 32² in `test/analysis.jl`.
+
+For thin worlds (`Nz` of 1–2) the 19-point stencil is not isotropic. If they matter,
+weight the in-plane stencil 4:1 when z neighbours are missing.
