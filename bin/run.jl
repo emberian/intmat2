@@ -1,19 +1,19 @@
 #!/usr/bin/env julia
 # Run a recipe with a Recorder:  julia --project=env/metal bin/run.jl recipe.toml outdir
 #
-# Recipe fields (TOML): name, C, seed, backend = "cpu"|"metal", N or dims = [Nx,Ny,Nz],
+# Recipe fields (TOML): name, C, seed, backend = "cpu"|"metal", N (+ optional Nz) or dims = [Nx,Ny,Nz],
 # steps, capture_every, n0, h_scale, s0, [rule_scales] {self,nb,inp,bias,read} (or an
 # explicit `theta` vector of 2C²+8C numbers; `rule_scales.nb_diag` adds that multiple of
 # the identity to W_nb), and every Physics field either at top
 # level or under [physics]. Optional `fields` (default s,n,w,L,pig) and `h_final = true`
 # to also save h in the last capture. `rule_eltype = "Float64"` draws the random rule in
 # Float64 (as bin/atlas.jl does) before converting. Missing run fields default to
-# N=128, steps=3000, capture_every=250, backend="metal", h_scale=0.1; any top-level
+# N=128 (Nz=N), steps=3000, capture_every=steps÷10, backend="metal", h_scale=0.1; any top-level
 # field can be overridden on the command line: run.jl recipe.toml outdir N=64 steps=500.
 using Intmat2, TOML, Random, Printf, KernelAbstractions
 using Intmat2: Recorder, record!, capture, light!
 
-const RUN_DEFAULTS = Dict{String,Any}("N" => 128, "steps" => 3000, "capture_every" => 250,
+const RUN_DEFAULTS = Dict{String,Any}("N" => 128, "steps" => 3000,
                                       "backend" => "metal", "h_scale" => 0.1)
 
 function parse_override(kv)
@@ -23,7 +23,8 @@ end
 
 function load_recipe(path, overrides=Pair{String,Any}[])
     r = merge(RUN_DEFAULTS, TOML.parsefile(path), Dict(overrides))
-    haskey(r, "dims") && any(first(o) == "N" for o in overrides) && delete!(r, "dims")
+    haskey(r, "dims") && any(first(o) in ("N", "Nz") for o in overrides) && delete!(r, "dims")
+    haskey(r, "capture_every") || (r["capture_every"] = max(r["steps"] ÷ 10, 1))
     phys = merge(Dict(k => v for (k, v) in r if Symbol(k) in fieldnames(Physics)), get(r, "physics", Dict()))
     p = Physics{Float32}(; (Symbol(k) => Float32(v) for (k, v) in phys)...)
     C = r["C"]; seed = get(r, "seed", 0)
@@ -39,7 +40,7 @@ function load_recipe(path, overrides=Pair{String,Any}[])
         end
         Rule{C,Float32}(Float32.(θ))
     end
-    dims = haskey(r, "dims") ? Tuple(Int.(r["dims"])) : (N = r["N"]; (N, N, N))
+    dims = haskey(r, "dims") ? Tuple(Int.(r["dims"])) : (N = r["N"]; (N, N, get(r, "Nz", N)))
     (; raw=r, p, rule, C, seed, dims)
 end
 
