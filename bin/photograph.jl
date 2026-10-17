@@ -16,20 +16,25 @@ using Intmat2: load_capture, render, write_png, MiniJSON
 # world the run executes in; `using` inside a function leaves step! on stale methods.
 select_backend(name) = name == "cpu" ? CPU() : name == "metal" ? Main.Metal.MetalBackend() : error("unknown backend $name")
 
-# `pig_floor = "q0.9"` means the 0.9 quantile of this capture's pigment field.
-function resolve_quantiles(o, pig)
-    op = get(o, "optics", Dict())
-    v = get(op, "pig_floor", 0.0)
-    v isa AbstractString || return o
-    q = parse(Float64, lstrip(v, 'q'))
-    sorted = sort(vec(pig))
-    o2 = deepcopy(o); o2["optics"]["pig_floor"] = Float64(sorted[clamp(round(Int, q * length(sorted)), 1, length(sorted))])
+# `pig_floor = "q0.9"` means the 0.9 quantile of this capture's pigment field; `s_floor`
+# takes the same form for solid.
+# "mid" means (q0.1 + q0.9)/2, the threshold the region tracker in src/evolve.jl uses.
+function resolve_quantiles(o, fields)
+    o2 = deepcopy(o)
+    op = get(o2, "optics", Dict())
+    for (key, f) in (("pig_floor", :pig), ("s_floor", :s))
+        v = get(op, key, 0.0)
+        v isa AbstractString || continue
+        sorted = sort(vec(fields[f]))
+        qt(q) = Float64(sorted[clamp(round(Int, q * length(sorted)), 1, length(sorted))])
+        op[key] = v == "mid" ? (qt(0.1) + qt(0.9)) / 2 : qt(parse(Float64, lstrip(v, 'q')))
+    end
     o2
 end
 
 function shoot(be, capdir, o, out)
     cap = load_capture(capdir)
-    o = resolve_quantiles(o, cap.fields[:pig])
+    o = resolve_quantiles(o, cap.fields)
     st = Intmat2.photo_setup(o, cap.manifest["dims"], cap.physics)
     up(a) = Intmat2.adapt(be, a)
     f = cap.fields

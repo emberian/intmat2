@@ -14,7 +14,7 @@
 export Optics, Camera, Clip, camera, render, render_world, write_png
 
 """
-    Optics(; alpha_s, alpha_p, density, solid, pigment, pigment_absorb, pig_floor, stain,
+    Optics(; alpha_s, alpha_p, density, solid, pigment, pigment_absorb, pig_floor, s_floor, stain,
              background, ambient, exposure, shoulder, step, gamma)
 
 Optical parameters of a photograph. `alpha_s`/`alpha_p` should be the run's Physics
@@ -22,7 +22,7 @@ values (`Optics(p::Physics; kw...)` copies them); `density` scales the camera-pa
 extinction only (1 = the light the material itself sees). `stain` adds camera-only
 extinction per unit pigment (like a histological stain: it changes what the camera
 picks out, never the illumination, which is always the simulation's L). Colours are
-RGB albedos.
+RGB albedos. `s_floor` likewise shows only solid above that level (camera-only).
 """
 struct Optics
     alpha_s::Float32
@@ -32,6 +32,7 @@ struct Optics
     pigment::SVector{3,Float32}
     pigment_absorb::SVector{3,Float32}
     pig_floor::Float32
+    s_floor::Float32
     stain::Float32
     background::SVector{3,Float32}
     ambient::Float32
@@ -41,10 +42,10 @@ struct Optics
     gamma::Float32
 end
 function Optics(; alpha_s=2.0, alpha_p=2.0, density=1.0, solid=(0.90, 0.89, 0.86),
-                pigment=(0.95, 0.42, 0.16), pigment_absorb=(0.35, 1.0, 1.4), pig_floor=0.0, stain=0.0,
+                pigment=(0.95, 0.42, 0.16), pigment_absorb=(0.35, 1.0, 1.4), pig_floor=0.0, s_floor=0.0, stain=0.0,
                 background=(0.012, 0.012, 0.014), ambient=0.0, exposure=1.0, shoulder=0.25, step=0.5, gamma=2.2)
     v3(x) = SVector{3,Float32}(x...)
-    Optics(alpha_s, alpha_p, density, v3(solid), v3(pigment), v3(pigment_absorb), pig_floor, stain,
+    Optics(alpha_s, alpha_p, density, v3(solid), v3(pigment), v3(pigment_absorb), pig_floor, s_floor, stain,
            v3(background), ambient, exposure, shoulder, step, gamma)
 end
 Optics(p::Physics; kw...) = Optics(; alpha_s=Float64(p.alpha_s), alpha_p=Float64(p.alpha_p), kw...)
@@ -150,6 +151,7 @@ end
                     pv = trilerp(pig, x[1], x[2], x[3], Nx, Ny, Nz)
                     Lv = trilerp(L, x[1], x[2], x[3], Nx, Ny, Nz)
                     pe = max(pv - pf, zero(T)) / (one(T) - pf)
+                    sv = max(sv - opt.s_floor, zero(T)) / (one(T) - opt.s_floor)
                     as = opt.density * opt.alpha_s * sv
                     ap = opt.density * (opt.alpha_p + opt.stain) * pe
                     σ = as .+ ap .* opt.pigment_absorb

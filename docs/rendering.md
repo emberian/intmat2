@@ -23,6 +23,9 @@ left of `T`, and gamma. `α_s`, `α_p` come from the capture's `Physics`.
 - `prefilter = true` blurs `s` and `pig` with a 3³ binomial kernel before marching. Many rules
   settle into single-cell alternation (checkerboards), which a camera cannot resolve and
   which otherwise aliases into moiré. The domain walls between checkerboards survive the blur.
+- `s_floor` (number, `"q0.x"` or `"mid"` = the region tracker's threshold) shows only solid above it.
+  `bin/regions_photo.jl` tints non-largest components of that mask (a label, not pigment);
+  `bin/regions_film.jl` is an unlit diagnostic film that works from solid-only captures.
 - `ambient` defaults to 0. Solid is a pale neutral and pigment is the only colour.
 - Clip: a box `lo..hi` plus one half-space `normal·x ≤ offset` cut the slab open, so
   you can photograph its interior.
@@ -70,6 +73,8 @@ push to `dev`: https://emberian.github.io/intmat2/. Raw runs stay in `outputs/` 
 
 | name | run | what it shows |
 |---|---|---|
+| regions | evolved-turnover-n05-188, t 300 | network + ~980 tracked fragments (orange = label); diagnostic film |
+| regions-3d | same, lower half | fragments in the seams of the network |
 | iso-labyrinth | iso-06 (stencil 1), 2060 steps | mid-depth slice: labyrinth → diagonal-favouring stripes, λ 6.7 (pred. 6.3); film |
 | iso-spots | iso-02, 1600 steps | spots and stripes, isotropic, λ 7.5 |
 | iso-columns-below | iso-02, camera inside | the spots are full-depth columns |

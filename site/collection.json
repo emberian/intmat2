@@ -1,5 +1,15 @@
 [
  {
+  "name": "regions",
+  "title": "A standing population of regions",
+  "caption": "Lane D's evolved-turnover-n05-188 (two-shell rule, axis stencil, n0 0.5, g1 −0.5), 128×128×48, t = 300. The photograph is a one-layer slice at mid-depth seen from above, lit by the simulation's own light. The grey shows solid above the region tracker's threshold, (q10+q90)/2 of s, that belongs to the largest connected component. Orange marks every other component; it is a label, not pigment. One connected network holds most of the solid (84% of thresholded voxels at the end). The 980 regions are small fragments on its edges: median 15 voxels, spanning about 4 of 48 layers. Most are broken stripe segments lying along the local stripe direction, crowded where stripe grains meet. They are born, die, split and merge: over the second half, 227 births, 450 deaths, 806 splits and 464 merges, 0.014 events per region per unit time. This is the first standing population of regions the substrate has produced. It is not a claim about life. The film is diagnostic, not lit. It is made from lane D's solid-only captures every 2 time units and shows an 8-layer mid-depth slab with the same colours. Between t ≈ 60 and 150 the network opens up and fragments appear along the openings. After that the fragment field changes slowly, mostly as flicker at fragment edges."
+ },
+ {
+  "name": "regions-3d",
+  "title": "Regions, lower half",
+  "caption": "The same state with the upper half of the slab removed, seen at an angle. Orange marks fragments as above (a label, not pigment). Through the depth, the fragments sit in the gaps and seams of the herringbone network."
+ },
+ {
   "name": "iso-labyrinth",
   "title": "Labyrinth",
   "caption": "Recipe iso-20261016-06 (tied two-shell rule on the isotropic 19-point stencil, predicted Turing at 6.3 cells), 128×128×48, run 10× its 8-e-fold length (2060 steps). The photograph is a 5-cell horizontal slice at mid-depth seen from above, lit by the simulation's light, with camera density 6. Solid forms a labyrinth that straightens into stripe domains. Measured s wavelength 6.7 cells (7.5 at recipe length). The orientation is not random: the stripes favour the two lattice diagonals. Power on the dominant ring is 8× higher at its strongest angle than its weakest (8 bins), against ~200× for the axis stencil, and other world seeds pick the same diagonals. The film shows the slice from noise to a pigmented labyrinth to straightening stripes."
