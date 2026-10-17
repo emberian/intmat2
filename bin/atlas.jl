@@ -38,7 +38,7 @@ function sample_point(i)
     sc = (self=pick(GRID.self), nb=pick(GRID.nb), inp=pick(GRID.inp), bias=pick(GRID.bias), read=pick(GRID.read))
     k_dep = pick(GRID.k_dep); D0 = pick(GRID.D0); g0 = 0.5
     dt = min(0.05, 1 / (6D0), 1.0)
-    p = Physics{Float64}(; dt=dt, tau_h=1.0, g0=g0, g1=g0 * pick(GRID.g1_over_g0), k_dep=k_dep,
+    p = Physics{Float64}(; dt=dt, tau_h=1.0, alpha_s=2.0, alpha_p=2.0, g0=g0, g1=g0 * pick(GRID.g1_over_g0), k_dep=k_dep,
                          k_ero=k_dep / pick(GRID.ero_over_dep), k_photo=pick(GRID.k_photo), D0=D0)
     (C=C, seed=seed, scales=sc, p=p, M=pick(GRID.M))
 end

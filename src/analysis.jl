@@ -79,8 +79,8 @@ Spatially uniform fixed point `(h*, n*, s*, w*, L*)` at mass per voxel `M = n+s+
 Light is self-consistent at layer `depth` of a uniform slab,
 `L* = L0 exp(−(depth−½)(α_s s* + α_p σ(v_pig·h*)))`, unless `L` fixes it, or
 `tau_above = τ` places the layer under optical depth `τ`: `L* = L0 exp(−(τ + a*/2))`
-(and `light=:local` then perturbs only the layer's own absorbance). `L_ambient` adds
-a uniform, unattenuated term to `L*` (proposed step change; not in `step!` yet).
+(and `light=:local` then perturbs only the layer's own absorbance). `L_ambient`
+(default `p.L_ambient`) adds a uniform, unattenuated term to `L*`.
 Activity: damped Newton (finite-difference Jacobian, backtracking) on
 `G(h) = tanh(W_self h + W_in [n,s,w,L](h) + b) − h` from `h0` (default 0), with the
 material solved exactly for each `h`. Several fixed points may exist; this returns
@@ -92,8 +92,9 @@ converged, iters, residual, clamped, method` (`clamped` is true when a `min` in 
 `p.dt`, i.e. the discrete stepper's fixed point differs from this one).
 """
 function steady_state(rule::Rule{C}, p::Physics; M=1.0, depth=1, L=nothing, tau_above=nothing,
-                      L_ambient=0.0, h0=zeros(C), tol=1e-13, maxiter=200) where {C}
+                      L_ambient=nothing, h0=zeros(C), tol=1e-13, maxiter=200) where {C}
     p = Physics{Float64}(p)
+    L_ambient === nothing && (L_ambient = p.L_ambient)
     lightc = depthfactor(depth)
     Lamb = Float64(L_ambient)
     depth0 = depth
@@ -216,24 +217,24 @@ function linear_parts(rule::Rule{C}, p, ss, light::Symbol) where {C}
     g = conductance(p, s, s)                       # g* (δg·(h_y−h_x) vanishes: h_y−h_x = 0)
     D = mobility(p, s)                             # D(s*) (δD·∇n vanishes: ∇n = 0)
     (S=S, Λ=Λ, dep=dep, ero=ero, pho=pho, phoL=phoL, g=g, D=D,
-     Wself=f64(rule.Wself), Wnb=f64(rule.Wnb), Win=f64(rule.Win))
+     Wself=f64(rule.Wself), Wnb=f64(rule.Wnb), Wnb2=f64(rule.Wnb2), Win=f64(rule.Win))
 end
 
 """
-    jacobian(rule, p, ss, κ; light=:frozen) -> Matrix (C+3)×(C+3)
+    jacobian(rule, p, ss, κ; κ2=0, light=:frozen) -> Matrix (C+3)×(C+3)
 
-Continuous-time Jacobian (dt → 0 limit of `step!`) about `ss` for a horizontal
-Fourier mode with `κ = 2Σ(1−cos kᵢ)`. Coupling `m → −g* κ δh`; transport
-`→ −D(s*) κ`. `light=:frozen` sets δL = 0; `:local` lets L respond to the voxel's
+Continuous-time Jacobian (dt → 0 limit of `step!`) about `ss` for a Fourier mode
+with ring symbol `κ = 2Σ(1−cos kᵢ)` and second-shell symbol `κ2 = 2Σ(1−cos 2kᵢ)`
+(`kappa2`). Coupling `→ −g*(κ W_nb + κ2 W_nb2) δh`; transport `→ −D(s*) κ`. `light=:frozen` sets δL = 0; `:local` lets L respond to the voxel's
 own δs, δpig through the depth factor (exact for a one-layer world).
 """
-function jacobian(rule::Rule{C}, p::Physics, ss, κ::Real; light::Symbol=:frozen) where {C}
+function jacobian(rule::Rule{C}, p::Physics, ss, κ::Real; κ2::Real=0.0, light::Symbol=:frozen) where {C}
     p = Physics{Float64}(p)
     q = linear_parts(rule, p, ss, light)
     N = C + 3
     J = zeros(N, N)
     SW = q.S .* q.Win
-    J[1:C, 1:C] .= (q.S .* (q.Wself .- q.g * κ .* q.Wnb) - I) ./ p.tau_h
+    J[1:C, 1:C] .= (q.S .* (q.Wself .- q.g * κ .* q.Wnb .- q.g * κ2 .* q.Wnb2) - I) ./ p.tau_h
     J[1:C, C+1:C+3] .= SW[:, 1:3] ./ p.tau_h
     J[1:C, :] .+= (SW[:, 4] * q.Λ') ./ p.tau_h
     pho = q.pho .+ q.phoL .* q.Λ
@@ -246,13 +247,13 @@ function jacobian(rule::Rule{C}, p::Physics, ss, κ::Real; light::Symbol=:frozen
 end
 
 """
-    stepmap(rule, p, ss, κ; light=:frozen) -> Matrix (C+3)×(C+3)
+    stepmap(rule, p, ss, κ; κ2=0, light=:frozen) -> Matrix (C+3)×(C+3)
 
 Exact linearization of one `step!` (activity → transport → material, in that order,
 material seeing the new `h` and the transported `n, w`, both seeing last step's `L`)
 for the same Fourier mode. `stepmap = I + dt·jacobian + O(dt²)`.
 """
-function stepmap(rule::Rule{C}, p::Physics, ss, κ::Real; light::Symbol=:frozen) where {C}
+function stepmap(rule::Rule{C}, p::Physics, ss, κ::Real; κ2::Real=0.0, light::Symbol=:frozen) where {C}
     p = Physics{Float64}(p)
     q = linear_parts(rule, p, ss, light)
     N = C + 3
@@ -261,7 +262,7 @@ function stepmap(rule::Rule{C}, p::Physics, ss, κ::Real; light::Symbol=:frozen)
     # B1: z → y = [h', ñ, s, w̃]
     B1 = Matrix{Float64}(I, N, N)
     SW = q.S .* q.Win
-    B1[1:C, 1:C] .= (1 - a) * I + a .* (q.S .* (q.Wself .- q.g * κ .* q.Wnb))
+    B1[1:C, 1:C] .= (1 - a) * I + a .* (q.S .* (q.Wself .- q.g * κ .* q.Wnb .- q.g * κ2 .* q.Wnb2))
     B1[1:C, C+1:C+3] .= a .* SW[:, 1:3]
     B1[1:C, :] .+= a .* (SW[:, 4] * q.Λ')
     B1[C+1, C+1] = T
@@ -290,41 +291,51 @@ end
 """
     Pencil(rule, p, ss; light=:frozen)
 
-Both linearizations are affine in κ: `J(κ) = J0 − κ JK` and `A(κ) = A0 − κ AK`
-(continuous Jacobian and one-step map). Built once per steady state.
+Both linearizations are affine in the two symbols: `J = J0 − κ JK − κ2 J2` and
+`A = A0 − κ AK − κ2 A2` (continuous Jacobian and one-step map). Built once per
+steady state. `twoscale` is true when the rule's `W_nb2` is nonzero; then the
+dispersion relation is no longer a function of κ alone.
 """
 struct Pencil
-    J0::Matrix{Float64}; JK::Matrix{Float64}
-    A0::Matrix{Float64}; AK::Matrix{Float64}
+    J0::Matrix{Float64}; JK::Matrix{Float64}; J2::Matrix{Float64}
+    A0::Matrix{Float64}; AK::Matrix{Float64}; A2::Matrix{Float64}
     Q::Matrix{Float64}
     dt::Float64
+    twoscale::Bool
 end
 function Pencil(rule::Rule{C}, p::Physics, ss; light::Symbol=:frozen) where {C}
     J0 = jacobian(rule, p, ss, 0.0; light); J1 = jacobian(rule, p, ss, 1.0; light)
     A0 = stepmap(rule, p, ss, 0.0; light); A1 = stepmap(rule, p, ss, 1.0; light)
-    Pencil(J0, J0 - J1, A0, A0 - A1, massfree_basis(C), Float64(p.dt))
+    two = any(!iszero, rule.Wnb2)
+    J2 = two ? J0 - jacobian(rule, p, ss, 0.0; κ2=1.0, light) : zeros(size(J0))
+    A2 = two ? A0 - stepmap(rule, p, ss, 0.0; κ2=1.0, light) : zeros(size(A0))
+    Pencil(J0, J0 - J1, J2, A0, A0 - A1, A2, massfree_basis(C), Float64(p.dt), two)
 end
 
 """Dominant eigenvalue (max real part) of `J(κ)`. At κ = 0 the exact zero mode of
 mass conservation is removed by restricting to the invariant subspace δn+δs+δw=0."""
-function dominant(P::Pencil, κ)
-    J = κ == 0 ? P.Q' * P.J0 * P.Q : P.J0 .- κ .* P.JK
+function dominant(P::Pencil, κ, κ2=0.0)
+    J = κ == 0 && κ2 == 0 ? P.Q' * P.J0 * P.Q : P.J0 .- κ .* P.JK .- κ2 .* P.J2
     λ = eigvals!(J)
     λ[argmax(real.(λ))]
 end
 
 """Dominant multiplier (max modulus) of the one-step map at κ (mass mode removed at 0)."""
-function dominant_map(P::Pencil, κ)
-    A = κ == 0 ? P.Q' * P.A0 * P.Q : P.A0 .- κ .* P.AK
+function dominant_map(P::Pencil, κ, κ2=0.0)
+    A = κ == 0 && κ2 == 0 ? P.Q' * P.A0 * P.Q : P.A0 .- κ .* P.AK .- κ2 .* P.A2
     μ = eigvals!(A)
     μ[argmax(abs.(μ))]
 end
 
 """Growth rate `log|μ_max|/dt` of the one-step map at κ."""
-map_rate(P::Pencil, κ) = log(abs(dominant_map(P, κ))) / P.dt
+map_rate(P::Pencil, κ, κ2=0.0) = log(abs(dominant_map(P, κ, κ2))) / P.dt
 
-"""κ of a lattice mode `(kx, ky)` (radians per voxel)."""
+"""Ring symbol κ of a mode `(kx, ky[, kz])` (radians per voxel)."""
 kappa(kx, ky) = 2(1 - cos(kx)) + 2(1 - cos(ky))
+kappa(kx, ky, kz) = kappa(kx, ky) + 2(1 - cos(kz))
+"""Second-shell (axis, distance 2) symbol `κ2(k) = κ(2k)`."""
+kappa2(kx, ky) = kappa(2kx, 2ky)
+kappa2(kx, ky, kz) = kappa(2kx, 2ky, 2kz)
 
 """Wavelength in voxels of the axis-aligned mode with this κ (κ ≤ 4); for κ > 4
 only diagonal modes exist and the diagonal wavelength is returned."""
@@ -347,10 +358,11 @@ discrete-map growth rate `log|μ_max|/dt`. Returns a NamedTuple:
 map_rate_max, map_rate0, map_rate_star`.
 """
 function dispersion(rule::Rule, p::Physics, ss; κs=DEFAULT_KAPPAS, light::Symbol=:frozen,
-                    refine::Bool=true)
-    dispersion(Pencil(rule, p, ss; light); κs, refine)
+                    refine::Bool=true, nk::Integer=48)
+    dispersion(Pencil(rule, p, ss; light); κs, refine, nk)
 end
-function dispersion(P::Pencil; κs=DEFAULT_KAPPAS, refine::Bool=true)
+function dispersion(P::Pencil; κs=DEFAULT_KAPPAS, refine::Bool=true, nk::Integer=48)
+    P.twoscale && return dispersion_k(P; nk, refine)
     λ0 = dominant(P, 0.0)
     λs = [dominant(P, κ) for κ in κs]
     re = real.(λs); im = imag.(λs)
@@ -382,6 +394,51 @@ function dispersion(P::Pencil; κs=DEFAULT_KAPPAS, refine::Bool=true)
      lambda_max=real(λstar), kappa_star=κstar, kstar=kst, wavelength=axis_wavelength(κstar),
      imag_star=imag(λstar), map_rate_max=max(maximum(mrates), m0), map_rate0=m0,
      map_rate_star=map_rate(P, κstar))
+end
+
+"""
+    dispersion_k(P; nk=48, refine=true)
+
+Two-shell dispersion: `Re λ_max` over horizontal wavevectors `0 ≤ ky ≤ kx ≤ π`
+(step `π/nk`; the symbols are symmetric under kx ↔ ky and sign flips), refined on a
+4× finer patch around the maximum. Same fields as the one-ring result; `κs, re, im`
+are the axis sweep `(k, 0)` with `κs = κ(k, 0)`, `kappa_star = κ(k*)`,
+`kstar = |k*|`, `wavelength = 2π/|k*|`, and `band_lo, band_hi` the extreme κ of
+unstable grid modes.
+"""
+function dispersion_k(P::Pencil; nk::Integer=48, refine::Bool=true)
+    λ0 = dominant(P, 0.0)
+    best = (re=-Inf, λ=0.0im, kx=0.0, ky=0.0)
+    band_lo, band_hi = Inf, -Inf
+    mmax = map_rate(P, 0.0)
+    ev(kx, ky) = dominant(P, kappa(kx, ky), kappa2(kx, ky))
+    for i in 0:nk, j in 0:i
+        (i == 0 && j == 0) && continue
+        kx = π * i / nk; ky = π * j / nk
+        λ = ev(kx, ky)
+        real(λ) > best.re && (best = (re=real(λ), λ=λ, kx=kx, ky=ky))
+        if real(λ) > 1e-9
+            κ = kappa(kx, ky); band_lo = min(band_lo, κ); band_hi = max(band_hi, κ)
+        end
+        mmax = max(mmax, map_rate(P, kappa(kx, ky), kappa2(kx, ky)))
+    end
+    if refine
+        h = π / nk
+        for a in -4:4, b in -4:4
+            kx = clamp(best.kx + a * h / 4, 0, π); ky = clamp(best.ky + b * h / 4, 0, π)
+            (kx == 0 && ky == 0) && continue
+            λ = ev(kx, ky)
+            real(λ) > best.re && (best = (re=real(λ), λ=λ, kx=kx, ky=ky))
+        end
+    end
+    ks = [π * i / nk for i in 1:nk]
+    ax = [ev(k, 0.0) for k in ks]
+    kk = hypot(best.kx, best.ky)
+    (κs=[kappa(k, 0.0) for k in ks], re=real.(ax), im=imag.(ax), re0=real(λ0), im0=imag(λ0),
+     band_lo=isfinite(band_lo) ? band_lo : NaN, band_hi=isfinite(band_hi) ? band_hi : NaN,
+     lambda_max=best.re, kappa_star=kappa(best.kx, best.ky), kstar=kk, kx=best.kx, ky=best.ky,
+     wavelength=2π / kk, imag_star=imag(best.λ), map_rate_max=mmax, map_rate0=map_rate(P, 0.0),
+     map_rate_star=map_rate(P, kappa(best.kx, best.ky), kappa2(best.kx, best.ky)))
 end
 
 """
@@ -455,10 +512,12 @@ function relax_column(rule::Rule{C}, p::Physics, layers; steps::Integer) where {
     run!(wd, rule, Physics{Float64}(p), steps)
 end
 
-# ------------------------------------------------------------------ two-scale coupling (proposed)
+# ------------------------------------------------------------------ coupling variants (research path)
+# `Pencil` handles the adopted two-shell rule; `Pencil2` keeps the ring filters and
+# W_nb / W_nb2 overrides used by bin/atlas2.jl.
 
 """
-    Pencil2(rule, p, ss; Wnb=rule.Wnb, Wnb2=nothing, light=:frozen)
+    Pencil2(rule, p, ss; Wnb=rule.Wnb, Wnb2=rule.Wnb2, light=:frozen)
 
 Linearization for a proposed two-scale coupling
 `m = Σ_{|d|=1} g (h_y − h_x)` (weight `W_nb`) `+ Σ_{d = ±2 eᵢ} g (h_y − h_x)` (weight
@@ -478,7 +537,7 @@ function Pencil2(rule::Rule{C}, p::Physics, ss; Wnb=nothing, Wnb2=nothing, light
     J0 = jacobian(rule, p, ss, 0.0; light)
     K1 = zeros(N, N); K2 = zeros(N, N); KD = zeros(N, N)
     K1[1:C, 1:C] .= q.S .* (q.g .* (Wnb === nothing ? q.Wnb : Matrix{Float64}(Wnb))) ./ p.tau_h
-    Wnb2 === nothing || (K2[1:C, 1:C] .= q.S .* (q.g .* Matrix{Float64}(Wnb2)) ./ p.tau_h)
+    K2[1:C, 1:C] .= q.S .* (q.g .* (Wnb2 === nothing ? q.Wnb2 : Matrix{Float64}(Wnb2))) ./ p.tau_h
     KD[C+1, C+1] = q.D; KD[C+3, C+3] = q.D
     Pencil2(J0, K1, K2, KD, massfree_basis(C))
 end
@@ -490,7 +549,6 @@ filtersym(f::Symbol, k) = f === :none ? 1.0 : f === :box ? (1 + 2cos(k)) / 3 :
 
 """Coupling symbols of a horizontal mode (kx, ky): ring `κ1 = 2Σ(1−cos kᵢ)` and the
 axis radius-2 shell `κ2 = 2Σ(1−cos 2kᵢ) = κ1(2k)`."""
-kappa2(kx, ky) = 2(1 - cos(2kx)) + 2(1 - cos(2ky))
 
 function dominant2(P::Pencil2, kx, ky; filter::Symbol=:none)
     if kx == 0 && ky == 0
@@ -571,7 +629,8 @@ withdt(p::Physics{T}, dt) where {T} =
 
 Largest `dt ≤ min(τ_h, 1/(6 D0))` for which the exact one-step map about the
 homogeneous steady state does not grow faster than the continuous system, at every
-`κ ∈ [0, κmax]` (12 = the 3D maximum):
+`κ ∈ [0, κmax]` (12 = the 3D maximum; for a two-shell rule, every 3D wavevector on a
+grid of step `π/nk3`):
 `log|μ_max(κ)|/dt ≤ 1.5 max(Re λ(κ), 0) + atol`, `atol = 1e-3/τ_h` by default.
 For a linearly stable steady state this is spectral radius ≤ e^{atol·dt} ≈ 1 at every
 κ; for an unstable one (Turing, Hopf) it admits the physical growth and rejects
@@ -580,16 +639,23 @@ numerical growth. `atol` absorbs the O(dt) shift of marginal modes at band edges
 resolved by this bound. Bisection over `dt` (40 halvings); returns 0 if even `dt_max/1000` fails.
 """
 function stable_dt(rule::Rule, p::Physics{T}; M=1.0, depth=1, ss=nothing, light::Symbol=:local,
-                   κmax=12.0, nκ=241, atol=1e-3 / p.tau_h) where {T}
+                   κmax=12.0, nκ=241, nk3=16, atol=1e-3 / p.tau_h) where {T}
     p64 = Physics{Float64}(p)
     ss === nothing && (ss = steady_state(rule, p64; M, depth))
     dmax = p64.D0 > 0 ? min(p64.tau_h, 1 / (6 * p64.D0)) : p64.tau_h
-    κs = range(0, κmax, length=nκ)
+    # symbol pairs (κ, κ2) to check: the κ line for one ring; for two shells, the 3D
+    # wavevector grid 0 ≤ kz ≤ ky ≤ kx ≤ π (step π/nk3), since κ alone no longer fixes κ2
+    syms = if any(!iszero, rule.Wnb2)
+        [(kappa(π * i / nk3, π * j / nk3, π * l / nk3), kappa2(π * i / nk3, π * j / nk3, π * l / nk3))
+         for i in 0:nk3 for j in 0:i for l in 0:j]
+    else
+        [(κ, 0.0) for κ in range(0, κmax, length=nκ)]
+    end
     Pc = Pencil(rule, p64, ss; light)
-    allowed = [max(real(dominant(Pc, κ)), 0.0) for κ in κs]
+    allowed = [max(real(dominant(Pc, κ, κ2)), 0.0) for (κ, κ2) in syms]
     function ok(dt)
         P = Pencil(rule, withdt(p64, dt), ss; light)
-        all(map_rate(P, κ) <= 1.5 * a + atol for (κ, a) in zip(κs, allowed))
+        all(map_rate(P, κ, κ2) <= 1.5 * a + atol for ((κ, κ2), a) in zip(syms, allowed))
     end
     ok(dmax) && return T(dmax)
     lo, hi = dmax / 1000, dmax
@@ -634,6 +700,7 @@ end
 
 """κ of each lattice mode of an `Nx×Ny` grid, as a matrix aligned with `power2d`."""
 lattice_kappa(Nx, Ny) = [kappa(2π * (a - 1) / Nx, 2π * (b - 1) / Ny) for a in 1:Nx, b in 1:Ny]
+lattice_kappa2(Nx, Ny) = [kappa2(2π * (a - 1) / Nx, 2π * (b - 1) / Ny) for a in 1:Nx, b in 1:Ny]
 
 """Fill a CPU Float64 world (h, s, n, w) with the steady state."""
 function set_uniform!(wd, ss)
