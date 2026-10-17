@@ -39,9 +39,23 @@ u   = W_self·h + W_nb·m + W_in·[n, s, w, L] + b
 h  += dt/τ_h · (tanh(u) − h)
 ```
 
-`θ = {W_self, W_nb ∈ R^{C×C}, W_in ∈ R^{C×4}, b, v_dep, v_ero, v_pig ∈ R^C}` is the
-**learnable local rule**: `2C² + 8C` numbers (184 at C=8). It is shared by every
-voxel. There is no separate organism: a "cell" is whatever coherent region the
+A second shell couples the six axis voxels at distance 2 with its own matrix:
+
+```
+m2  = Σ_{d=±2eᵢ} g(x,x+d) · (h_{x+d} − h_x)
+u  += W_nb2·m2
+```
+
+`θ = {W_self, W_nb, W_nb2 ∈ R^{C×C}, W_in ∈ R^{C×4}, b, v_dep, v_ero, v_pig ∈ R^C}` is the
+**learnable local rule**: `3C² + 8C` numbers (248 at C=8). It is shared by every
+voxel. The second shell exists because the analysis said so (2026-10-16): with one
+ring the rule has one spatial scale, and over 20,000 sampled rules only 0.5% formed
+patterns at all while 12% collapsed to grid-scale checkerboards. Tying
+`W_nb2 = −β·W_nb` with `W_nb` positive semidefinite is short-range activation with
+longer-range inhibition; it puts the fastest mode at `cos k* = 1/(4β)` per axis and
+raised the patterning fraction to 20–62%, at 4–16 cells, growing on the activity
+clock. Measured wavelengths match the prediction within a few percent across a
+hundred rules. The tie is a sampling prior; search may break it. There is no separate organism: a "cell" is whatever coherent region the
 dynamics make, reproduction is a region splitting, inheritance is continuity of
 state and deposit, evolution is which regimes persist.
 
@@ -54,8 +68,13 @@ ero   = min(k_ero·a_ero·s·dt, s)
 photo = min(k_photo·L·w·dt, w)
 s += dep − ero        n += −dep + photo + ∇·(D(s)∇n)        w += ero − photo + ∇·(D(s)∇w)
 D(s) = D₀ (1−s)²   with harmonic-mean face conductances
-L(i,j,k) = L₀ exp(−Σ_{k'>k} (α_s s + α_p pig) − ½(α_s s + α_p pig)_k)
+L(i,j,k) = L_amb + L₀ exp(−Σ_{k'>k} (α_s s + α_p pig) − ½(α_s s + α_p pig)_k)
 ```
+
+Absorption is per cell and small (`α_s = 0.05`): the material is translucent, and
+light reaches the floor of a 48-deep slab. At `α_s = 2` the slab went dark three
+layers down and became a waste store under a crust, which removed the predicted
+patterns. `L_amb` lets a specimen be lit without a vertical gradient.
 
 Light is both an input to the rule (`W_in`) and the only source of regeneration, and
 the rendered image uses the *same* `L` as its illumination. Light is inside the loop.
@@ -98,6 +117,20 @@ Float64 CPU reference as oracle. Four KernelAbstractions kernels per step
 allocation. Same source runs on Metal (M2 Max) and AMD (hbox RX 6750 XT via the
 verified pinned environment). Throughput is measured as **complete steps per
 second at a given N³**, and separately as **worlds per second** for batches.
+
+## What the first day found
+
+- The linear theory is exact for this stepper: predicted and measured growth rates
+  agree to three decimals; a quiet run of a predicted-slow rule is expected.
+- `6 D₀ dt ≤ 1` is not the dt bound; the explicit neighbour coupling is. `stable_dt`
+  computes the real one. Rules that violate it game temporal-richness scores.
+- Evolution over a repertoire beats random search when the search vector respects
+  the structure the analysis found, and loses when Gaussian mutation destroys it.
+  Mutate on the manifold.
+- The best structured rule so far is a frozen lattice with near-perfect material
+  memory. Structure, memory and ongoing change trade off; the alife question is the
+  corner where all three hold, and the objectives that measure it are regions that
+  persist, split, merge and die, not spectral power.
 
 ## What is deliberately not here
 
