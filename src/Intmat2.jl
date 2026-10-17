@@ -17,7 +17,7 @@ using Printf
 
 const KA = KernelAbstractions
 
-export Rule, Physics, World, step!, nparams, random_rule, summarize, total_mass
+export Rule, Physics, World, step!, nparams, random_rule, tied_rule, summarize, total_mass
 
 include("rule.jl")
 include("state.jl")

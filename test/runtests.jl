@@ -1,11 +1,17 @@
-using Intmat2, Test, Random, KernelAbstractions, Statistics
+using Intmat2, Test, Random, KernelAbstractions, Statistics, LinearAlgebra
 using Intmat2: run!, light!, timescales
 
 @testset "rule round trip" begin
     r = random_rule(MersenneTwister(1), 8, Float64)
-    @test nparams(r) == 2 * 64 + 64
+    @test nparams(r) == 3 * 64 + 64
     @test Rule{8,Float64}(vec(r)) == r
     @test_throws ArgumentError Rule{8,Float64}(zeros(3))
+    # a one-ring vector still loads, with Wnb2 = 0
+    r1 = Rule{8,Float64}(vec(r)[1:2*64+64])
+    @test r1.Wnb == r.Wnb && all(iszero, r1.Wnb2)
+    t = tied_rule(MersenneTwister(2), 6, Float64; nb1=2.0, beta=0.4)
+    @test t.Wnb2 ≈ -0.4 .* t.Wnb
+    @test all(eigvals(Symmetric(Matrix(t.Wnb))) .>= -1e-12)
 end
 
 @testset "conservation and bounds (Float64 CPU)" begin
