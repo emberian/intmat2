@@ -20,7 +20,9 @@
 # Apple GPUs halves the step and moves the 64³×50-step gate by < 1e-6
 # (docs/performance.md). Default: precise on the CPU, fast on GPUs.
 @inline act_tanh(::Val{false}, x) = tanh(x)
-@inline act_tanh(::Val{true}, x) = Base.FastMath.tanh_fast(x)
+# Metal's fast tanh returns NaN for x ≳ 50 (it divides two overflowed exponentials);
+# |x| ≥ 9 is already ±1 to within 6e-8 in Float32, so clamp there.
+@inline act_tanh(::Val{true}, x::T) where {T} = Base.FastMath.tanh_fast(clamp(x, T(-9), T(9)))
 @inline softplus(::Val{false}, x) = softplus(x)
 @inline softplus(::Val{true}, x::T) where {T} =
     x > T(20) ? x : Base.FastMath.log_fast(one(T) + Base.FastMath.exp_fast(x))
