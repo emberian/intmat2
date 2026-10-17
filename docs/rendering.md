@@ -70,6 +70,10 @@ push to `dev`: https://emberian.github.io/intmat2/. Raw runs stay in `outputs/` 
 
 | name | run | what it shows |
 |---|---|---|
+| iso-labyrinth | iso-06 (stencil 1), 2060 steps | mid-depth slice: labyrinth → diagonal-favouring stripes, λ 6.7 (pred. 6.3); film |
+| iso-spots | iso-02, 1600 steps | spots and stripes, isotropic, λ 7.5 |
+| iso-columns-below | iso-02, camera inside | the spots are full-depth columns |
+| iso-labyrinth-oblique / -section | iso-06 | whole slab; diagonal cut showing sheets |
 | lamellae | tied-10 (two-shell), 128×128×48, 5442 steps | through-depth sheets in x/y stripe grains, λ 6.9 (pred. 6.6); film |
 | lamellae-section | same, diagonal cut | sheets on the cut face, dimming with depth |
 | crossgrain | tied-09, 13476 steps | stripe grains sharpening while solid erodes to waste |
@@ -82,4 +86,5 @@ push to `dev`: https://emberian.github.io/intmat2/. Raw runs stay in `outputs/` 
 
 One-ring random and atlas rules mostly give depth strata or single-cell checkerboards.
 The tied two-shell recipes give the predicted 6–8 cell lateral pattern at every depth.
-Tied recipes need `fast=false` on Metal: fast tanh returns NaN in one step.
+The isotropic stencil (`stencil = 1`) removes the axis weave. The stripes that remain
+still favour the lattice diagonals.

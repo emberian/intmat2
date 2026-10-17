@@ -1,0 +1,14 @@
+# camera inside the slab near the floor, looking up through the pattern toward the lit top
+width = 1600
+height = 1600
+backend = "metal"
+prefilter = false
+[optics]
+density = 1.0
+pig_floor = "q0.9"
+exposure = 2.5
+shoulder = 0.5
+[camera]
+pos = [0.5, 0.25, 0.08]
+target = [0.5, 0.75, 0.9]
+fov = 75

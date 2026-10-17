@@ -1,5 +1,30 @@
 [
  {
+  "name": "iso-labyrinth",
+  "title": "Labyrinth",
+  "caption": "Recipe iso-20261016-06 (tied two-shell rule on the isotropic 19-point stencil, predicted Turing at 6.3 cells), 128×128×48, run 10× its 8-e-fold length (2060 steps). The photograph is a 5-cell horizontal slice at mid-depth seen from above, lit by the simulation's light, with camera density 6. Solid forms a labyrinth that straightens into stripe domains. Measured s wavelength 6.7 cells (7.5 at recipe length). The orientation is not random: the stripes favour the two lattice diagonals. Power on the dominant ring is 8× higher at its strongest angle than its weakest (8 bins), against ~200× for the axis stencil, and other world seeds pick the same diagonals. The film shows the slice from noise to a pigmented labyrinth to straightening stripes."
+ },
+ {
+  "name": "iso-spots",
+  "title": "Spots and stripes",
+  "caption": "iso-20261016-02, 1600 steps (10×), the same mid-depth slice. Spots and short stripes mix, with no preferred direction (angular max/min 1.65). Wavelength 7.5 cells against 6.3 predicted. Contrast peaks early (std_s 0.14 at step 320) and then softens (0.065) while solid saturates near 0.35 and waste rises to 0.10."
+ },
+ {
+  "name": "iso-columns-below",
+  "title": "Columns, from inside",
+  "caption": "iso-02 again, the camera inside the slab near the floor looking up toward the lit top. The spots of the plan view are columns running the full 48-cell depth. Their bases are dim and their tops are bright in the material's own light, with pigment threads between them."
+ },
+ {
+  "name": "iso-labyrinth-oblique",
+  "title": "Labyrinth, whole slab",
+  "caption": "iso-06 seen whole from above at an angle. In depth the labyrinth walls are vertical sheets, so the side faces show the pattern as columns."
+ },
+ {
+  "name": "iso-labyrinth-section",
+  "title": "Labyrinth, cut",
+  "caption": "iso-06 cut on a vertical diagonal. The labyrinth walls are vertical sheets running the full 48-cell depth."
+ },
+ {
   "name": "lamellae",
   "title": "Lamellae",
   "caption": "Analysis-lane recipe tied-20261016-10 (two-shell rule, predicted Turing at 6.6 cells), 128×128×48, alpha_s 0.05, alpha_p 0.1, dt 0.0055, run 6× its 8-e-fold length (5442 steps). Solid organizes into sheets that go through the whole depth. The sheets form grains of x-oriented and y-oriented stripes, because the second shell couples only along the axes. Measured s wavelength 6.9 cells (FFT centroid) against 6.6 predicted. Contrast saturates (std_s 0.155 at the recipe's end, 0.233 at 6×) while mean s creeps from 0.16 to 0.34 and waste accumulates. The film is the same run: a uniform pigmented skin breaks into a labyrinth, which coarsens into grains."
