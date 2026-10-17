@@ -501,16 +501,27 @@ individual is passed to `log` as a record. `cache` (θ → result) is consulted 
 evaluating and filled after, so runs sharing a seed share their identical first
 population; cached individuals still count toward the evaluation budget. Returns `(archive, final_population_indices)`.
 """
-function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, gens=8, seed=1,
+function evolve(C::Integer, p::Physics{T}, cfg; mode=:nsga, pop=48, gens=8, seed=1,
                 sigma0=0.3, init=nothing, eval=evaluate, objectives=SELECT_OBJECTIVES,
-                log=rec -> nothing, cache=Dict{Vector{Float64},Any}(), scales=(;), sampler=nothing) where {T}
+                log=rec -> nothing, cache=Dict{Vector{Float64},Any}(), scales=(;), sampler=nothing,
+                space=nothing) where {T}
     rng = MersenneTwister(seed)
-    scale = rule_scale(C; scales...); np = length(scale); blocks = rule_blocks(C, np)
-    draw() = sampler === nothing ? randn(rng, np) : θ_to_z(sampler(rng), scale)
+    if space === nothing           # z = θ ./ scale in the flat rule layout
+        scale = rule_scale(C; scales...); np = length(scale); blocks = rule_blocks(C, np)
+        draw = () -> sampler === nothing ? randn(rng, np) : θ_to_z(sampler(rng), scale)
+        decode = z -> scale .* z
+        fix! = z -> z
+    else                           # z = u ./ scale in a structured space (e.g. TiedSpace)
+        init === nothing || throw(ArgumentError("init θ cannot be mapped into a structured space"))
+        scale = space_scale(space); np = length(scale); blocks = space_blocks(space)
+        draw = () -> space_prior(space, rng) ./ scale
+        decode = z -> space_theta(space, scale .* z)
+        fix! = z -> space_clamp!(space, z, scale)
+    end
     archive = NamedTuple[]
     function run_batch!(zs, sigmas, parents, gen)
-        rules = [Rule{C,T}(T.(scale .* z)) for z in zs]
-        zs = [θ_to_z(vec(r), scale) for r in rules]    # z of the rule actually run
+        rules = [Rule{C,T}(T.(decode(z))) for z in zs]
+        space === nothing && (zs = [θ_to_z(vec(r), scale) for r in rules])    # z of the rule actually run
         t0 = time()
         keys_ = [Float64.(vec(r)) for r in rules]
         todo = findall(k -> !haskey(cache, k), keys_)
@@ -559,6 +570,7 @@ function evolve(C::Integer, p::Physics{T}, cfg::EvalConfig; mode=:nsga, pop=48, 
             end
             σ = clamp(σ * exp(0.2 * randn(rng)), 0.02, 1.0)
             z .+= σ .* randn(rng, np)
+            fix!(z)
             push!(zs, z); push!(sig, σ); push!(par, pa)
         end
         Q = collect(run_batch!(zs, sig, par, g))
@@ -606,4 +618,360 @@ function read_recipe(path; T=Float32)
     ph = d["physics"]
     p = Physics{T}(; (f => T(ph[string(f)]) for f in fieldnames(Physics) if haskey(ph, string(f)))...)
     rule, p, d
+end
+
+# ============================================================================= two-shell manifold
+
+"""
+    TiedSpace(C; untied=false, self=0.8, inp=0.5, bias=0.1, read=0.5,
+              nb1=(1.0, 16.0), beta=(0.28, 0.5), beta_clamp=(0.2, 0.6), dscale=0.3)
+
+Search coordinates on the tied two-shell manifold:
+`u = [Wself (C²) | P (C²) | log nb1 | β | Win (4C) | b | vdep | vero | vpig (C each) | D (C², untied only)]`,
+mapped to a rule by `Wnb = nb1·PPᵀ/C` (positive semidefinite) and
+`Wnb2 = −β·Wnb + nb1·D/C`. `D` starts at 0; with `untied = true` mutation may move it
+(step `dscale`, in units of the entries of `PPᵀ`), so selection, not mutation, decides
+whether to leave the manifold. Prior: `P ~ N(0,1)`, `nb1` log-uniform on `nb1`,
+`β` uniform on `beta`; the other blocks as `tied_rule`/`random_rule`. β is clamped to
+`beta_clamp` after every mutation. Mutation step scales: Wself `self/√C`, P 1, log nb1
+0.3, β 0.05, the rest their prior scales.
+"""
+Base.@kwdef struct TiedSpace
+    C::Int
+    untied::Bool = false
+    self::Float64 = 0.8
+    inp::Float64 = 0.5
+    bias::Float64 = 0.1
+    read::Float64 = 0.5
+    nb1::NTuple{2,Float64} = (1.0, 16.0)
+    beta::NTuple{2,Float64} = (0.28, 0.5)
+    beta_clamp::NTuple{2,Float64} = (0.2, 0.6)
+    dscale::Float64 = 0.3
+end
+TiedSpace(C::Integer; kw...) = TiedSpace(; C=Int(C), kw...)
+
+function space_scale(sp::TiedSpace)
+    C = sp.C; sc = 1 / sqrt(C)
+    v = vcat(fill(sp.self * sc, C * C), ones(C * C), [0.3, 0.05], fill(sp.inp, 4C), fill(sp.bias, C),
+             fill(sp.read, 3C))
+    sp.untied ? vcat(v, fill(sp.dscale, C * C)) : v
+end
+
+function space_blocks(sp::TiedSpace)
+    C = sp.C
+    o = cumsum([0, C * C, C * C, 2, 4C, C, C, C, C])
+    bl = [o[i]+1:o[i+1] for i in 1:8]
+    sp.untied ? push!(bl, o[end]+1:o[end]+C*C) : bl
+end
+
+function space_prior(sp::TiedSpace, rng)
+    C = sp.C; sc = 1 / sqrt(C)
+    lognb1 = log(sp.nb1[1]) + rand(rng) * (log(sp.nb1[2]) - log(sp.nb1[1]))
+    β = sp.beta[1] + rand(rng) * (sp.beta[2] - sp.beta[1])
+    u = vcat(randn(rng, C * C) .* (sp.self * sc), randn(rng, C * C), [lognb1, β],
+             randn(rng, 4C) .* sp.inp, randn(rng, C) .* sp.bias, randn(rng, 3C) .* sp.read)
+    sp.untied ? vcat(u, zeros(C * C)) : u
+end
+
+"""Index of β in `u`."""
+beta_index(sp::TiedSpace) = 2sp.C * sp.C + 2
+
+function space_clamp!(sp::TiedSpace, z, scale)
+    i = beta_index(sp)
+    z[i] = clamp(z[i] * scale[i], sp.beta_clamp...) / scale[i]
+    z
+end
+
+"""Flat rule vector (`vec(rule)` layout, 3C²+8C) of manifold coordinates `u`."""
+function space_theta(sp::TiedSpace, u)
+    C = sp.C; o = 0
+    take(n) = (v = u[o+1:o+n]; o += n; v)
+    Wself = take(C * C); P = reshape(take(C * C), C, C)
+    nb1 = exp(u[o+1]); β = clamp(u[o+2], sp.beta_clamp...); o += 2
+    rest = take(4C + 4C)                     # Win | b | vdep | vero | vpig
+    Wnb = (nb1 / C) .* (P * P')
+    Wnb2 = -β .* Wnb
+    sp.untied && (Wnb2 .+= (nb1 / C) .* reshape(take(C * C), C, C))
+    vcat(Wself, vec(Wnb), rest, vec(Wnb2))
+end
+
+# ============================================================================= regions: life-shaped objectives
+
+"""
+    label_components(mask; min_size=8) -> (labels::Array{Int32,3}, sizes)
+
+6-connected components of `mask`, periodic in x and y, walls in z (union–find).
+Components smaller than `min_size` voxels are dropped (label 0). Labels are 1..K.
+"""
+function label_components(mask::AbstractArray{Bool,3}; min_size::Integer=8)
+    Nx, Ny, Nz = size(mask)
+    LI = LinearIndices(mask)
+    parent = collect(1:length(mask))
+    find(i) = (while parent[i] != i; parent[i] = parent[parent[i]]; i = parent[i]; end; i)
+    unite(a, b) = (ra = find(a); rb = find(b); ra != rb && (parent[max(ra, rb)] = min(ra, rb)))
+    @inbounds for k in 1:Nz, j in 1:Ny, i in 1:Nx
+        mask[i, j, k] || continue
+        q = LI[i, j, k]
+        ii = i == Nx ? 1 : i + 1; mask[ii, j, k] && unite(q, LI[ii, j, k])
+        jj = j == Ny ? 1 : j + 1; mask[i, jj, k] && unite(q, LI[i, jj, k])
+        k < Nz && mask[i, j, k+1] && unite(q, LI[i, j, k+1])
+    end
+    cnt = Dict{Int,Int}()
+    @inbounds for q in eachindex(mask)
+        mask[q] && (r = find(q); cnt[r] = get(cnt, r, 0) + 1)
+    end
+    ids = Dict{Int,Int32}(); sizes = Int[]
+    for r in sort!(collect(keys(cnt)))
+        cnt[r] >= min_size || continue
+        push!(sizes, cnt[r]); ids[r] = Int32(length(sizes))
+    end
+    labels = zeros(Int32, size(mask))
+    @inbounds for q in eachindex(mask)
+        mask[q] && (labels[q] = get(ids, find(q), Int32(0)))
+    end
+    labels, sizes
+end
+
+"""Solid above the midpoint of its 10th and 90th percentiles; empty if that spread < `contrast`."""
+function region_mask(s::AbstractArray{<:Real,3}; contrast=0.02)
+    q10, q90 = quantile(vec(s), (0.1, 0.9))
+    q90 - q10 < contrast ? falses(size(s)) : s .> (q10 + q90) / 2
+end
+
+"""
+    track(prev, next) -> (births, deaths, splits, merges, inherit)
+
+Components of consecutive captures are linked when they share a voxel. A new component
+with no predecessor is a birth, an old one with no successor a death; an old one with k ≥ 2
+successors counts k−1 splits, a new one with k ≥ 2 predecessors k−1 merges.
+`inherit[j]` is the old label that new component j continues (mutual largest overlap),
+or 0 (a new identity).
+"""
+function track(prev::AbstractArray{Int32,3}, next::AbstractArray{Int32,3})
+    Kp = maximum(prev; init=Int32(0)); Kn = maximum(next; init=Int32(0))
+    ov = Dict{Tuple{Int32,Int32},Int}()
+    @inbounds for q in eachindex(prev)
+        a = prev[q]; b = next[q]
+        (a > 0 && b > 0) && (ov[(a, b)] = get(ov, (a, b), 0) + 1)
+    end
+    nsucc = zeros(Int, Kp); npred = zeros(Int, Kn)
+    bests = zeros(Int32, Kp); bestsv = zeros(Int, Kp); bestp = zeros(Int32, Kn); bestpv = zeros(Int, Kn)
+    for ((a, b), v) in ov
+        nsucc[a] += 1; npred[b] += 1
+        v > bestsv[a] && (bestsv[a] = v; bests[a] = b)
+        v > bestpv[b] && (bestpv[b] = v; bestp[b] = a)
+    end
+    inherit = [bestp[j] > 0 && bests[bestp[j]] == j ? bestp[j] : Int32(0) for j in 1:Kn]
+    (births=count(==(0), npred), deaths=count(==(0), nsucc),
+     splits=sum(max.(nsucc .- 1, 0); init=0), merges=sum(max.(npred .- 1, 0); init=0), inherit=inherit)
+end
+
+"""
+    life_objectives(caps, cap_dt; min_size=8, cell=8, rate_target=0.1) -> NamedTuple
+
+From a time series of solid fields `caps` (equally spaced by `cap_dt`), regions = 6-connected
+components (periodic x,y) of `region_mask`, ≥ `min_size` voxels, tracked by overlap.
+- `population` = `4x(1−x)`, x = clamp(mean count / (volume/cell³), 0, 1): one global
+  lattice (x ≈ 0) and dust (x ≥ 1) both score 0, peak at half the target count.
+- `turnover` = `4y(1−y)`, y = clamp(r / (2·rate_target), 0, 1), r = (births + deaths +
+  splits + merges) per region per unit time: frozen and wholesale replacement score 0.
+- `lifetime_spread` = normalized entropy of identity lifetimes over log2 bins of `cap_dt`.
+- `localization` = `(1 − PR)·min(1, rms/0.05)` on the last field, PR the participation
+  ratio of the lateral deviation energy `(s − layer mean)²`; a sinusoidal lattice has
+  PR ≈ 0.51, blobs filling a fraction f have PR ≈ f.
+"""
+function life_objectives(caps::AbstractVector{<:AbstractArray{<:Real,3}}, cap_dt;
+                         min_size=8, cell=8, rate_target=0.1)
+    labs = [label_components(region_mask(c); min_size)[1] for c in caps]
+    counts = [Int(maximum(l; init=Int32(0))) for l in labs]
+    nb = nd = nsp = nm = 0
+    first_seen = Dict{Int,Int}(); last_seen = Dict{Int,Int}()
+    ident = [Int[] for _ in labs]; nextid = 0
+    ident[1] = collect(1:counts[1]); nextid = counts[1]
+    for i in 1:counts[1]; first_seen[i] = 1; last_seen[i] = 1; end
+    for t in 2:length(labs)
+        tr = track(labs[t-1], labs[t])
+        nb += tr.births; nd += tr.deaths; nsp += tr.splits; nm += tr.merges
+        ident[t] = map(tr.inherit) do a
+            a > 0 ? ident[t-1][a] : (nextid += 1)
+        end
+        for id in ident[t]
+            haskey(first_seen, id) || (first_seen[id] = t)
+            last_seen[id] = t
+        end
+    end
+    Nx, Ny, Nz = size(caps[end])
+    target = Nx * Ny * Nz / cell^3
+    μc = mean(counts)
+    x = clamp(μc / target, 0.0, 1.0)
+    span = (length(caps) - 1) * cap_dt
+    events = nb + nd + nsp + nm
+    r = (μc > 0 && span > 0) ? events / (μc * span) : 0.0
+    y = clamp(r / (2rate_target), 0.0, 1.0)
+    lt = [(last_seen[id] - first_seen[id] + 1) * cap_dt for id in keys(first_seen)]
+    nbin = max(2, ceil(Int, log2(length(caps))) + 1)
+    spread = if length(lt) >= 2
+        h = zeros(nbin)
+        for l in lt
+            h[clamp(floor(Int, log2(l / cap_dt)) + 1, 1, nbin)] += 1
+        end
+        h ./= sum(h)
+        -sum(v > 0 ? v * log(v) : 0.0 for v in h) / log(nbin)
+    else
+        0.0
+    end
+    s = Float64.(caps[end])
+    d = similar(s)
+    for k in 1:Nz
+        sl = view(s, :, :, k); d[:, :, k] .= abs2.(sl .- mean(sl))
+    end
+    sd = sum(d)
+    PR = sd > 1e-20 ? sd^2 / (length(d) * sum(abs2, d)) : 1.0
+    rms = sqrt(sd / length(d))
+    (population=4x * (1 - x), turnover=4y * (1 - y), lifetime_spread=spread,
+     localization=(1 - PR) * min(1.0, rms / 0.05),
+     n_regions=μc, n_regions_last=counts[end], births=nb, deaths=nd, splits=nsp, merges=nm,
+     event_rate=r, participation=PR, n_identities=length(lt))
+end
+
+"Selection set for region-shaped behaviour."
+const LIFE_SELECT = (:localization, :population, :turnover, :temporal, :recovery)
+"All objectives recorded by `evaluate_life`."
+const LIFE_OBJECTIVES = (:localization, :population, :turnover, :lifetime_spread, :temporal,
+                         :memory_h, :recovery, :persistence, :structure)
+
+"""
+    LifeConfig(; dims, t_main, t_cont, cap_dt, probe_dt, track_from, seed, n0, h_scale, nprobe,
+               reset_scale, erase_radius, dt_max, dt_min, dt_safety, min_size, cell, backend)
+
+Measurement schedule in physical time. Each rule gets its own step
+`dt = clamp(dt_safety·stable_dt, dt_min, dt_max)` rounded down to `dt_max·2^-k`
+(floor `dt_min`), so fast rules cost more steps instead of being infeasible. Captures of
+`s` every `cap_dt` (persistence over the whole run; regions tracked from
+`track_from·t_main` on), activity probes every `probe_dt` over the last half.
+"""
+Base.@kwdef struct LifeConfig
+    dims::NTuple{3,Int} = (32, 32, 24)
+    t_main::Float64 = 100.0
+    t_cont::Float64 = 25.0
+    cap_dt::Float64 = 2.0
+    probe_dt::Float64 = 0.5
+    track_from::Float64 = 0.5
+    seed::Int = 1
+    n0::Float64 = 0.5
+    h_scale::Float64 = 0.1
+    nprobe::Int = 16
+    reset_scale::Float64 = 0.01
+    erase_radius::Float64 = 0.0
+    dt_max::Float64 = 0.1
+    dt_min::Float64 = 0.004
+    dt_safety::Float64 = 0.8
+    min_size::Int = 8
+    cell::Int = 8
+    backend::Any = KA.CPU()
+end
+
+with_dt(p::Physics{T}, dt) where {T} =
+    Physics{T}(; (f => (f === :dt ? T(dt) : getfield(p, f)) for f in fieldnames(Physics))...)
+
+"""Step for a rule: `dt_safety·stable_dt` rounded down to `dt_max·2^-k`, within [dt_min, dt_max]."""
+function choose_dt(sdt, cfg::LifeConfig)
+    isfinite(sdt) || return max(cfg.dt_max / 8, cfg.dt_min)
+    d = clamp(cfg.dt_safety * sdt, cfg.dt_min, cfg.dt_max)
+    b = cfg.dt_max
+    while b > d && b / 2 >= cfg.dt_min
+        b /= 2
+    end
+    b > d ? cfg.dt_min : b
+end
+
+"""
+    evaluate_life(rules, p, cfg::LifeConfig) -> Vector{NamedTuple}
+
+`LIFE_OBJECTIVES` plus diagnostics (`dt`, `stable_dt`, region counts and events, …). Rules
+sharing a step run together in one `WorldBatch`.
+"""
+function evaluate_life(rules::AbstractVector{<:Rule{C,T}}, p::Physics{T}, cfg::LifeConfig) where {C,T}
+    sdts = Vector{Float64}(undef, length(rules))
+    Threads.@threads for i in eachindex(rules)
+        sdts[i] = try
+            Float64(Analysis.stable_dt(rules[i], p; M=cfg.n0))
+        catch
+            NaN
+        end
+    end
+    dts = [choose_dt(s, cfg) for s in sdts]
+    out = Vector{Any}(undef, length(rules))
+    for d in unique(dts)
+        idx = findall(==(d), dts)
+        res = life_group(rules[idx], with_dt(p, d), cfg, sdts[idx])
+        out[idx] = res
+    end
+    [o for o in out]
+end
+
+function life_group(rules::AbstractVector{<:Rule{C,T}}, p::Physics{T}, cfg::LifeConfig, sdts) where {C,T}
+    t0 = time()
+    be = cfg.backend; B = length(rules); nv = prod(cfg.dims); dt = Float64(p.dt)
+    wb = WorldBatch(be, C, cfg.dims, B; T=T, seeds=fill(cfg.seed, B), n0=cfg.n0, h_scale=cfg.h_scale)
+    θ = device_rules(be, rules)
+    wb = light!(wb, θ, p)
+    m0 = total_mass(wb)
+    nmain = round(Int, cfg.t_main / dt)
+    capevery = max(1, round(Int, cfg.cap_dt / dt))
+    pevery = max(1, round(Int, cfg.probe_dt / dt))
+    tp = nmain - nmain ÷ 2
+    M = (nmain - tp) ÷ pevery
+    prng = MersenneTwister(cfg.seed + 7919)
+    idx = adapt(be, Int32.(rand(prng, 1:nv, cfg.nprobe)))
+    buf = KA.zeros(be, T, C, cfg.nprobe, max(M, 1), B)
+    pk = probe_batch_kernel!(be)
+    caps = Array{T,4}[]; lbot = Vector{Float64}[]; captimes = Float64[]
+    r = 0
+    for st in 1:nmain
+        wb = step!(wb, θ, p; sync=false)
+        if st % capevery == 0
+            KA.synchronize(be)
+            push!(caps, Array(wb.s))
+            push!(lbot, vec(mean(Float64.(Array(view(wb.L, :, :, 1, :))); dims=(1, 2))))
+            push!(captimes, st * dt)
+        end
+        if st > tp && (st - tp) % pevery == 0 && r < M
+            r += 1
+            pk(buf, wb.h, idx, r, C, nv; ndrange=(C, cfg.nprobe, B))
+        end
+    end
+    KA.synchronize(be)
+    probes = Array{Float64}(Array(buf))
+    starts = [perturbations(world(wb, b), rules[b], p, cfg) for b in 1:B]
+    cb = WorldBatch(be, [w for k in 1:3 for w in (st[k] for st in starts)])
+    cb = run!(cb, device_rules(be, vcat(rules, rules, rules)), p, round(Int, cfg.t_cont / dt))
+    m1 = total_mass(wb)
+    hH = Array(wb.h); cS = Array(cb.s); cH = Array(cb.h)
+    track_idx = findall(>=(cfg.track_from * cfg.t_main - 1e-9), captimes)
+    map(1:B) do b
+        sb = [c[:, :, :, b] for c in caps]
+        trace = [(mean_s=mean(c), std_s=std(c; corrected=false), light_bottom=lb[b])
+                 for (c, lb) in zip(sb, lbot)]
+        lf = life_objectives(sb[track_idx], cfg.cap_dt; min_size=cfg.min_size, cell=cfg.cell)
+        s_end = Float64.(sb[end])
+        sc = Float64.(cS[:, :, :, b]); sp = cS[:, :, :, B+b]; se = Float64.(cS[:, :, :, 2B+b])
+        hc = cH[:, :, :, :, b]; hp = cH[:, :, :, :, B+b]
+        fin = all(isfinite, s_end) && all(isfinite, sc) && all(isfinite, hc) && all(isfinite, hp)
+        tm = temporal(probes[:, :, :, b])
+        st = structure(s_end)
+        obj = fin ? (localization=lf.localization, population=lf.population, turnover=lf.turnover,
+                     lifetime_spread=lf.lifetime_spread, temporal=tm.score,
+                     memory_h=corr0(hc, hp), recovery=recovery(sc, se, starts[b][4], s_end),
+                     persistence=persistence(trace), structure=st.score) :
+              NamedTuple{LIFE_OBJECTIVES}(ntuple(_ -> 0.0, length(LIFE_OBJECTIVES)))
+        diag = (dt=dt, stable_dt=sdts[b], dt_ok=!(sdts[b] < dt), mean_s=trace[end].mean_s,
+                std_s=trace[end].std_s, light_bottom=trace[end].light_bottom,
+                mass_drift=(m1[b] - m0[b]) / nv, lambda=st.lambda, n_regions=lf.n_regions,
+                n_regions_last=lf.n_regions_last, births=lf.births, deaths=lf.deaths, splits=lf.splits,
+                merges=lf.merges, event_rate=lf.event_rate, participation=lf.participation,
+                n_identities=lf.n_identities, t_fixed=tm.fixed, t_periodic=tm.periodic,
+                h_autocorr=corr0(hH[:, :, :, :, b], hc), finite=fin, wall=time() - t0)
+        merge(map(x -> isfinite(x) ? x : 0.0, obj), diag)
+    end
 end

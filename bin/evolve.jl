@@ -288,6 +288,88 @@ if haskey(A, "tie")
     exit(0)
 end
 
+# --- life mode: region objectives (LIFE_SELECT), per-rule dt, manifold search space
+#   --life 1 --space tied|untied|flat --modes random,nsga --n0 0.5 --t_main 100 ...
+if haskey(A, "life")
+    using Intmat2: LifeConfig, evaluate_life, LIFE_SELECT, LIFE_OBJECTIVES, TiedSpace, with_dt
+    lcfg = LifeConfig(dims=dims, t_main=arg("t_main", 100.0), t_cont=arg("t_cont", 25.0), cap_dt=arg("cap_dt", 2.0),
+                      n0=arg("n0", 0.5), seed=arg("world_seed", 1), dt_max=arg("dt_max", 0.1),
+                      dt_min=arg("dt_min", 0.004), backend=be)
+    spname = arg("space", "tied")
+    space = spname == "flat" ? nothing :
+        TiedSpace(C; untied=spname == "untied", nb1=(arg("nb1_lo", 1.0), arg("nb1_hi", 16.0)),
+                  beta=(arg("beta_lo", 0.28), arg("beta_hi", 0.5)))
+    lnt = (dims=lcfg.dims, t_main=lcfg.t_main, t_cont=lcfg.t_cont, cap_dt=lcfg.cap_dt, track_from=lcfg.track_from,
+           world_seed=lcfg.seed, n0=lcfg.n0, h_scale=lcfg.h_scale, dt_max=lcfg.dt_max, dt_min=lcfg.dt_min,
+           dt_safety=lcfg.dt_safety, min_size=lcfg.min_size, cell=lcfg.cell, backend=backend_name, C=C, space=spname)
+    lsum = Dict{String,Any}("command" => cmd, "commit" => commit, "run" => run, "physics_base" => p, "eval" => lnt,
+                            "pop" => pop, "gens" => gens, "seed" => seed, "select_objectives" => collect(LIFE_SELECT),
+                            "modes" => Dict{String,Any}())
+    allarch = Any[]
+    for mode in modes
+        path = joinpath(outdir, "evolve-$run-$mode.jsonl")
+        io = open(path, "w"); t0 = time()
+        logf = function (rec)
+            r = rec.res
+            line = (run=run, mode=mode, id=rec.id, gen=rec.gen, parents=rec.parents, sigma=rec.sigma,
+                    es_seed=seed, world_seed=lcfg.seed, theta=rec.theta, z=rec.z,
+                    objectives=NamedTuple{LIFE_OBJECTIVES}(Tuple(r[k] for k in LIFE_OBJECTIVES)),
+                    diag=Base.structdiff(r, NamedTuple{LIFE_OBJECTIVES}), physics=with_dt(p, r.dt),
+                    eval=lnt, batch_wall=rec.batch_wall)
+            println(io, js(line)); flush(io)
+            if rec.id % pop == 0
+                @printf("%s %s gen %d  %.0f s\n", run, mode, rec.gen, time() - t0); flush(stdout)
+            end
+        end
+        arch, P = evolve(C, p, lcfg; mode=mode, pop=pop, gens=gens, seed=seed, log=logf, space=space,
+                         eval=evaluate_life, objectives=LIFE_SELECT)
+        close(io)
+        F = reduce(hcat, [objvec(a.res, LIFE_SELECT) for a in arch])
+        front = findall(==(1), nondominated_rank(F))
+        hv = hypervolume(F; rng=MersenneTwister(12345))
+        lsum["modes"][string(mode)] = Dict{String,Any}("evaluations" => length(arch), "wall_s" => time() - t0,
+            "hypervolume" => hv, "best" => Dict(string(o) => maximum(F[m, :]) for (m, o) in enumerate(LIFE_SELECT)),
+            "best_turnover_raw" => maximum(a.res.turnover for a in arch),
+            "front_ids" => [arch[i].id for i in front], "archive" => basename(path))
+        append!(allarch, arch)
+        @printf("%s %s: %d evals, HV %.4f, best turnover %.3f\n", run, mode, length(arch), hv,
+                maximum(a.res.turnover for a in arch)); flush(stdout)
+        open(io -> println(io, js(lsum)), joinpath(outdir, "evolve-$run.json"), "w")
+    end
+    Fall = reduce(hcat, [Float64[a.res[k] for k in LIFE_OBJECTIVES] for a in allarch])
+    lsum["objective_correlation"] = Dict(string(LIFE_OBJECTIVES[i], "~", LIFE_OBJECTIVES[j]) =>
+        cor(Fall[i, :], Fall[j, :]) for i in 1:length(LIFE_OBJECTIVES) for j in i+1:length(LIFE_OBJECTIVES))
+    open(io -> println(io, js(lsum)), joinpath(outdir, "evolve-$run.json"), "w")
+    exit(0)
+end
+
+# --- track mode: regions of a bin/run.jl capture series (needs field s)
+#   --track outputs/d/<rundir> --out name [--cap_dt 2]
+if haskey(A, "track")
+    using Intmat2: load_capture, region_mask, label_components, track, life_objectives
+    rd = A["track"]
+    frames = sort(filter(f -> isdir(joinpath(rd, f)) && all(isdigit, f), readdir(rd)))
+    caps = [Float64.(load_capture(joinpath(rd, f)).fields[:s]) for f in frames]
+    cap_dt = arg("cap_dt", 2.0)
+    labs = [label_components(region_mask(c))[1] for c in caps]
+    series = Any[]
+    for t in eachindex(labs)
+        tr = t == 1 ? (births=0, deaths=0, splits=0, merges=0) : track(labs[t-1], labs[t])
+        push!(series, (frame=frames[t], count=Int(maximum(labs[t]; init=Int32(0))), mean_s=mean(caps[t]),
+                       births=tr.births, deaths=tr.deaths, splits=tr.splits, merges=tr.merges))
+    end
+    half = (length(caps) ÷ 2 + 1):length(caps)
+    lf_all = life_objectives(caps, cap_dt); lf_half = life_objectives(caps[half], cap_dt)
+    open(io -> println(io, js((command=cmd, rundir=rd, cap_dt=cap_dt, dims=size(caps[1]), whole=lf_all,
+                               second_half=lf_half, series=series))),
+         joinpath(outdir, "evolve-track-$(get(A, "out", basename(rd))).json"), "w")
+    println("whole: ", lf_all); println("second half: ", lf_half)
+    for x in series[1:max(1, length(series) ÷ 15):end]
+        @printf("%s count %4d  b %3d d %3d s %3d m %3d  mean_s %.3f\n", x.frame, x.count, x.births, x.deaths, x.splits, x.merges, x.mean_s)
+    end
+    exit(0)
+end
+
 summary = Dict{String,Any}("command" => cmd, "commit" => commit, "run" => run, "physics" => p,
                            "eval" => cfgnt, "pop" => pop, "gens" => gens, "seed" => seed, "scales" => scales, "prior" => arg("prior", "gauss"), "evaluator" => arg("evaluator", "tasks"),
                            "select_objectives" => collect(SELECT_OBJECTIVES), "modes" => Dict{String,Any}())
