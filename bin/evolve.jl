@@ -193,13 +193,16 @@ if haskey(A, "recipe")
         pr = Physics{Float32}(; pd...)
         Cr = infer_C(length(θ))
         obj = Dict{Symbol,Float64}()
-        for k in (ALL_OBJECTIVES..., :mean_s, :std_s, :struct_rms, :lambda, :photic)
+        for k in (unique((ALL_OBJECTIVES..., Intmat2.LIFE_OBJECTIVES...))..., :mean_s, :std_s, :struct_rms, :lambda, :photic, :n_regions, :event_rate, :stable_dt)
             m = match(Regex("\"$k\":(-?[0-9.eE+-]+)"), line)
             m === nothing || (obj[k] = parse(Float64, m[1]))
         end
         path = joinpath(recdir, "evolved-$name.toml")
-        write_recipe(path, Rule{Cr,Float32}(Float32.(θ)), pr, cfg; N=cfg.dims, steps=cfg.T,
-                     backend=arg("recipe_backend", "metal"), note="archive $(basename(f)) id $id; eval $(cfg.dims) T=$(cfg.T)",
+        # --t_run T: steps = T/dt of the archived rule (per-rule dt), captures every --cap_dt
+        steps_r = haskey(A, "t_run") ? round(Int, arg("t_run", 300.0) / Float64(pr.dt)) : cfg.T
+        cap_r = haskey(A, "t_run") ? max(1, round(Int, arg("cap_dt", 2.0) / Float64(pr.dt))) : max(steps_r ÷ 10, 1)
+        write_recipe(path, Rule{Cr,Float32}(Float32.(θ)), pr, cfg; N=cfg.dims, steps=steps_r, capture_every=cap_r,
+                     backend=arg("recipe_backend", "metal"), note="archive $(basename(f)) id $id; dims $(cfg.dims), $(steps_r) steps at dt $(pr.dt)",
                      objectives=(; obj...))
         println(path)
     end
@@ -230,6 +233,7 @@ end
 # rules passing the explicit-Euler check (ids from evolve-<run>-correlation.json)
 #   --hv results/evolve-g1neg-random.jsonl,... --out name
 if haskey(A, "hv")
+    HVO = arg("objectives", "five") == "life" ? Intmat2.LIFE_SELECT : SELECT_OBJECTIVES
     rows = Any[]
     for f in split(A["hv"], ",")
         runname = match(r"evolve-(.*)-(random|nsga)\.jsonl", basename(f))[1]
@@ -243,19 +247,19 @@ if haskey(A, "hv")
         F = Vector{Float64}[]; Fok = Vector{Float64}[]
         for line in eachline(f)
             id = parse(Int, match(r"\"id\":(\d+)", line)[1])
-            v = [clamp(parse(Float64, match(Regex("\"$o\":(-?[0-9.eE+-]+)"), line)[1]), 0.0, 1.0) for o in SELECT_OBJECTIVES]
+            v = [clamp(parse(Float64, match(Regex("\"$o\":(-?[0-9.eE+-]+)"), line)[1]), 0.0, 1.0) for o in HVO]
             push!(F, v); id in bad || push!(Fok, v)
         end
         M = reduce(hcat, F); Mok = reduce(hcat, Fok)
         row = (archive=basename(f), n=length(F), n_dt_ok=length(Fok),
                hv=hypervolume(M; rng=MersenneTwister(12345)), hv_dt_ok=hypervolume(Mok; rng=MersenneTwister(12345)),
-               best=NamedTuple{SELECT_OBJECTIVES}(Tuple(maximum(M, dims=2))),
-               best_dt_ok=NamedTuple{SELECT_OBJECTIVES}(Tuple(maximum(Mok, dims=2))))
+               best=NamedTuple{HVO}(Tuple(maximum(M, dims=2))),
+               best_dt_ok=NamedTuple{HVO}(Tuple(maximum(Mok, dims=2))))
         push!(rows, row)
         @printf("%-28s n=%3d ok=%3d  HV %.4f  HV(dt ok) %.4f  best(ok) %s\n", row.archive, row.n, row.n_dt_ok, row.hv, row.hv_dt_ok,
                 join(("$k=$(round(v, digits=3))" for (k, v) in pairs(row.best_dt_ok)), " "))
     end
-    open(io -> println(io, js((command=cmd, commit=commit, objectives=SELECT_OBJECTIVES, rows=rows))),
+    open(io -> println(io, js((command=cmd, commit=commit, objectives=HVO, rows=rows))),
          joinpath(outdir, "evolve-$(get(A, "out", "hv"))-hv.json"), "w")
     exit(0)
 end
