@@ -4,7 +4,8 @@ using Intmat2, KernelAbstractions, Random, Printf
 using Intmat2: run!, light!
 const KA = KernelAbstractions
 
-gate_rule(T=Float32) = random_rule(MersenneTwister(1), 8, T; self=1.0, nb=1.0)
+# One-ring rule (Wnb2 = 0): the reference predates the second shell.
+gate_rule(T=Float32) = Rule{8,T}(vec(random_rule(MersenneTwister(1), 8, T; self=1.0, nb=1.0))[1:2*64+64])
 # Pinned to the 09d1bd7 defaults the reference was made with (alpha defaults changed since).
 gate_physics(T=Float32) = Physics{T}(alpha_s=2.0, alpha_p=2.0)
 gate_world(be, N; T=Float32, seed=3) =

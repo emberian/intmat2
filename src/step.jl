@@ -1,6 +1,8 @@
 # One complete step is two passes:
 #   update: h, s, n, w, L → h2, s2, n2, w2, and the absorbance A (written into L)
-#           per voxel, in this order: activity (h2 from old h, s, n, w, L),
+#           per voxel, in this order: activity (h2 from old h, s, n, w, L; coupling
+#           over the ring at distance 1 through Wnb and the axis shell at distance 2
+#           through Wnb2, which reads only h and s there),
 #           transport (diffusion of old n, w through old s), material (dep, ero, photo
 #           on the transported n, w with old s, old L and new h2), absorbance of (s2, h2).
 #   light:  A → L, one work-item per (i, j) column marching down from the lit top face.
@@ -55,11 +57,6 @@ end
     d > zero(T) ? 2 * Dx * Dy / d : zero(T)
 end
 
-"""Light absorbed by one cell: solid plus pigment read out of the activity (same
-expression as the last line of `update_voxel!`)."""
-@inline absorbance(rule::Rule{C,T}, p::Physics{T}, sx, hx) where {C,T} =
-    p.alpha_s * sx + p.alpha_p * sigmoid(dot(rule.vpig, hx))
-
 # The rule inside the update kernel is read from a flat parameter vector θ in the
 # `vec(rule)` layout (Wself | Wnb | Win | b | vdep | vero | vpig, column-major), at the
 # point of use. Passing `Rule` by value made the compiler load all 2C²+8C numbers at
@@ -81,6 +78,29 @@ expression as the last line of `update_voxel!`)."""
     end
     push!(ex.args, :(SVector{$R,$T}($(acc...))))
     ex
+end
+
+# θ[off+1:off+C] ⋅ x as a strict left-to-right fma chain. StaticArrays' `dot` is an
+# `@simd` reduction whose association the CPU compiler may change between code paths,
+# which broke bitwise equality between a World and the same world inside a batch.
+@inline function θdot(θ, off::Int32, x::SVector{C,T}) where {C,T}
+    acc = zero(T)
+    for c in 1:C
+        acc = fma(@inbounds(θ[off + Int32(c)]), x[c], acc)
+    end
+    acc
+end
+
+# i mod N for i ∈ [-2N, 3N) without a division.
+@inline function wrap(i::Int32, N::Int32)
+    while i < Int32(0); i += N; end
+    while i >= N; i -= N; end
+    i
+end
+
+# Second-shell voxel at offset y: conductance between the two end voxels, h only.
+@inline function shell(h, s, p::Physics{T}, ::Val{C}, hx, sx, y::Int32) where {C,T}
+    @inbounds conductance(p, sx, s[y + Int32(1)]) .* (loadh(h, Val(C), y) - hx)
 end
 
 # Neighbour at offset y: its contribution to the coupling m and to the fluxes fn, fw.
@@ -109,7 +129,7 @@ Split a 0-based linear offset into (b, i, j, k), all 0-based, for worlds of
 end
 
 # The whole per-voxel step for voxel offset q with in-world coordinates (i, j, k).
-# θ[θo + 1 : θo + 2C²+8C] is the rule.
+# θ[θo + 1 : θo + 3C²+8C] is the rule.
 @inline function update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, θo::Int32, ::Val{C}, fm::Val, p::Physics{T},
                                Nx::Int32, Ny::Int32, Nz::Int32, q::Int32,
                                i::Int32, j::Int32, k::Int32) where {C,T}
@@ -137,17 +157,30 @@ end
             dm, dn, dw = face(h, s, n, w, p, Val(C), hx, sx, nx, wx, q - NxNy)
             m += dm; fn += dn; fw += dw
         end
+        # second shell: the axis voxels at distance 2 (x, y periodic for any N ≥ 1)
+        two = Int32(2)
+        m2 = shell(h, s, p, Val(C), hx, sx, q + (wrap(i + two, Nx) - i))
+        m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(i - two, Nx) - i))
+        m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(j + two, Ny) - j) * Nx)
+        m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(j - two, Ny) - j) * Nx)
+        if k + two < Nz
+            m2 += shell(h, s, p, Val(C), hx, sx, q + two * NxNy)
+        end
+        if k >= two
+            m2 += shell(h, s, p, Val(C), hx, sx, q - two * NxNy)
+        end
         # activity
         inp = SVector{4,T}(nx, sx, wx, Lx)
         u = θmatvec(θ, θo, Val(C), hx) + θmatvec(θ, θo + CC, Val(C), m) +
             θmatvec(θ, θo + Int32(2) * CC, Val(C), inp) + θvec(θ, θo + Int32(2) * CC + Int32(4C), Val(C), T)
+        u += θmatvec(θ, θo + Int32(2) * CC + Int32(8C), Val(C), m2)   # Wnb2 (added last: Wnb2 = 0 is exact)
         hn = hx + (p.dt / p.tau_h) .* (act_tanh.(fm, u) - hx)
         # transport
         nt = nx + p.dt * fn
         wt = wx + p.dt * fw
         # material, on the transported n, w and the new activity
-        adep = softplus(fm, dot(θvec(θ, θo + Int32(2) * CC + Int32(5C), Val(C), T), hn))
-        aero = softplus(fm, dot(θvec(θ, θo + Int32(2) * CC + Int32(6C), Val(C), T), hn))
+        adep = softplus(fm, θdot(θ, θo + Int32(2) * CC + Int32(5C), hn))
+        aero = softplus(fm, θdot(θ, θo + Int32(2) * CC + Int32(6C), hn))
         dep = min(p.k_dep * adep * nt * (one(T) - sx) * p.dt, nt, one(T) - sx)
         ero = min(p.k_ero * aero * sx * p.dt, sx)
         photo = min(p.k_photo * Lx * wt * p.dt, wt)
@@ -157,7 +190,7 @@ end
         s2[q + o] = sn
         n2[q + o] = nt - dep + photo
         w2[q + o] = wt + ero - photo
-        L[q + o] = p.alpha_s * sn + p.alpha_p * sigmoid(fm, dot(θvec(θ, θo + Int32(2) * CC + Int32(7C), Val(C), T), hn))
+        L[q + o] = p.alpha_s * sn + p.alpha_p * sigmoid(fm, θdot(θ, θo + Int32(2) * CC + Int32(7C), hn))
     end
 end
 
@@ -172,23 +205,24 @@ end
         for k in Nz-Int32(1):Int32(-1):Int32(0)
             x = base + k * NxNy
             a = L[x]
-            L[x] = p.L0 * exp(-(τ + a / 2))
+            L[x] = p.L_ambient + p.L0 * exp(-(τ + a / 2))
             τ += a
         end
     end
 end
 
 # The update over B ≥ 1 worlds of V = Nx·Ny·Nz voxels stacked along a trailing
-# dimension; θ holds B rules of P = 2C²+8C numbers back to back. Each workgroup first
+# dimension; θ holds Bθ ∈ {1, B} rules of P = 3C²+8C numbers back to back (Bθ = 1:
+# all worlds share one rule). Each workgroup first
 # copies the (at most two) rules its voxels use into threadgroup memory. The launch
 # range is padded to whole workgroups (`unsafe_indices`) so every lane reaches the
 # barrier; padded lanes do no work.
 @kernel unsafe_indices=true function update_kernel!(h2, s2, n2, w2, L, @Const(h), @Const(s), @Const(n),
         @Const(w), @Const(θ), ::Val{C}, fm::Val, p::Physics{T}, Nx::Int32, Ny::Int32, Nz::Int32,
-        B::Int32) where {C,T}
-    lθ = @localmem T (2 * (2C * C + 8C),)
+        B::Int32, Bθ::Int32) where {C,T}
+    lθ = @localmem T (2 * (3C * C + 8C),)
     # (values are recomputed after the barrier: KA's CPU backend splits the body there)
-    P = Int32(2C * C + 8C)
+    P = Int32(3C * C + 8C)
     q = (@index(Global, Linear) - 1) % Int32
     li = (@index(Local, Linear) - 1) % Int32
     V = Nx * Ny * Nz
@@ -198,12 +232,12 @@ end
     t = li
     while t < nθ
         hi = t >= P
-        bt = min(b0 + (hi ? Int32(1) : Int32(0)), B - Int32(1))
+        bt = Bθ == Int32(1) ? Int32(0) : min(b0 + (hi ? Int32(1) : Int32(0)), B - Int32(1))
         @inbounds lθ[t + Int32(1)] = θ[bt * P + (hi ? t - P : t) + Int32(1)]
         t += gs
     end
     @synchronize
-    P = Int32(2C * C + 8C)
+    P = Int32(3C * C + 8C)
     q = (@index(Global, Linear) - 1) % Int32
     li = (@index(Local, Linear) - 1) % Int32
     b0 = min((q - li) ÷ (Nx * Ny * Nz), B - Int32(1))
@@ -219,39 +253,56 @@ end
     light_column!(L, p, Nx, Ny, Nz, col)
 end
 
-@kernel function absorbance_kernel!(L, @Const(s), @Const(h), rule::Rule{C,T}, p::Physics{T}) where {C,T}
+# Absorbance of the current state for B worlds (θ with Bθ ∈ {1, B} columns).
+@kernel function absorbance_kernel!(L, @Const(s), @Const(h), @Const(θ), ::Val{C}, p::Physics{T},
+                                    V::Int32, Bθ::Int32) where {C,T}
     q = (@index(Global, Linear) - 1) % Int32
-    @inbounds L[q + Int32(1)] = absorbance(rule, p, s[q + Int32(1)], loadh(h, Val(C), q))
+    b = Bθ == Int32(1) ? Int32(0) : q ÷ V
+    off = b * Int32(3C * C + 8C) + Int32(2C * C + 7C)
+    @inbounds L[q + Int32(1)] = p.alpha_s * s[q + Int32(1)] +
+        p.alpha_p * sigmoid(θdot(θ, off, loadh(h, Val(C), q)))
 end
 
 """Workgroup sizes of the update and light passes (see docs/performance.md)."""
 update_workgroup(be) = 32
 light_workgroup(be) = 64
 
-# One-entry cache of the device copy of the last rule stepped on each backend type, so
-# `step!(wd, rule, p)` in a loop uploads θ once. Entries are replaced, never mutated,
-# so a task holding an old array is unaffected by another task's miss.
-const _θ_cache = Dict{DataType,Any}()
+# Device copies of rules, cached per backend so that `step!(wd, rule, p)` uploads θ
+# once per distinct rule. A kernel launched with `sync=false` may still be reading an
+# entry, so the cache is only ever cleared after synchronizing the backend (dropping
+# the last reference to an in-flight array lets the GC free it under the kernel).
+const _θ_cache = Dict{Any,Any}()
 const _θ_lock = ReentrantLock()
+const _θ_cache_limit = 4096
 
-"""Device-resident `vec(rule)` on backend `be` (cached for the last rule)."""
-function device_theta(be, rule::Rule{C,T}) where {C,T}
+function cached_upload(make, be, key)
     lock(_θ_lock) do
-        hit = get(_θ_cache, typeof(be), nothing)
-        hit !== nothing && hit[1] === rule && return hit[2]
-        θ = KA.allocate(be, T, nparams(rule))
-        copyto!(θ, collect(vec(rule)))
-        _θ_cache[typeof(be)] = (rule, θ)
-        θ
+        k = (typeof(be), key)
+        hit = get(_θ_cache, k, nothing)
+        hit !== nothing && return hit
+        if length(_θ_cache) >= _θ_cache_limit
+            KA.synchronize(be)
+            empty!(_θ_cache)
+        end
+        _θ_cache[k] = make()
     end
 end
 
+"""Device-resident `vec(rule)` on backend `be` (cached per rule)."""
+device_theta(be, rule::Rule{C,T}) where {C,T} = cached_upload(be, rule) do
+    θ = KA.allocate(be, T, nparams(rule))
+    copyto!(θ, collect(vec(rule)))
+    θ
+end
+
 function launch_update!(be, h2, s2, n2, w2, L, h, s, n, w, θ, ::Val{C}, fm::Val, p,
-                        X::Int32, Y::Int32, Z::Int32, B::Int32) where {C}
+                        X::Int32, Y::Int32, Z::Int32, B::Int32, Bθ::Int32=Int32(1)) where {C}
     wg = update_workgroup(be)
     total = Int(X) * Int(Y) * Int(Z) * Int(B)
-    update_kernel!(be, wg)(h2, s2, n2, w2, L, h, s, n, w, θ, Val(C), fm, p, X, Y, Z, B;
-                           ndrange=cld(total, wg) * wg)
+    # Flat vectors: World and WorldBatch then share one kernel specialization.
+    v = vec
+    update_kernel!(be, wg)(v(h2), v(s2), v(n2), v(w2), v(L), v(h), v(s), v(n), v(w), v(θ), Val(C), fm, p,
+                           X, Y, Z, B, Bθ; ndrange=cld(total, wg) * wg)
 end
 
 function check_int32(C, dims, B=1)
@@ -278,10 +329,19 @@ function step!(wd::World{C,T}, rule::Rule{C,T}, p::Physics{T};
     θ = device_theta(be, rule)
     launch_update!(be, wd.h2, wd.s2, wd.n2, wd.w2, wd.L, wd.h, wd.s, wd.n, wd.w, θ, Val(C),
                    Val(fast), p, X, Y, Z, Int32(1))
-    light_kernel!(be, light_workgroup(be))(wd.L, p, X, Y, Z; ndrange=Nx * Ny)
+    light_kernel!(be, light_workgroup(be))(vec(wd.L), p, X, Y, Z; ndrange=Nx * Ny)
     sync && KA.synchronize(be)
     World{C,T,typeof(wd.h),typeof(wd.s)}(wd.h2, wd.s2, wd.n2, wd.w2, wd.L,
         wd.h, wd.s, wd.n, wd.w, wd.t + p.dt, wd.step + 1)
+end
+
+# Absorbance then the column march, for B worlds; flat vectors as in `launch_update!`.
+function launch_light!(be, L, s, h, θ, ::Val{C}, p, X::Int32, Y::Int32, Z::Int32, B::Int32,
+                       Bθ::Int32) where {C}
+    V = X * Y * Z
+    absorbance_kernel!(be, update_workgroup(be))(vec(L), vec(s), vec(h), vec(θ), Val(C), p, V, Bθ;
+                                                 ndrange=Int(V) * Int(B))
+    light_kernel!(be, light_workgroup(be))(vec(L), p, X, Y, Z; ndrange=Int(X) * Int(Y) * Int(B))
 end
 
 """Recompute `L` from the current `s` and `h` (used after construction or edits)."""
@@ -289,8 +349,8 @@ function light!(wd::World{C,T}, rule::Rule{C,T}, p::Physics{T}) where {C,T}
     be = backend(wd)
     Nx, Ny, Nz = size(wd)
     check_int32(C, (Nx, Ny, Nz))
-    absorbance_kernel!(be, update_workgroup(be))(wd.L, wd.s, wd.h, rule, p; ndrange=Nx * Ny * Nz)
-    light_kernel!(be, light_workgroup(be))(wd.L, p, Int32(Nx), Int32(Ny), Int32(Nz); ndrange=Nx * Ny)
+    launch_light!(be, wd.L, wd.s, wd.h, device_theta(be, rule), Val(C), p,
+                  Int32(Nx), Int32(Ny), Int32(Nz), Int32(1), Int32(1))
     KA.synchronize(be)
     wd
 end

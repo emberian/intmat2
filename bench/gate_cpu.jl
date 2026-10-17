@@ -12,7 +12,7 @@ using Intmat2: light!
 ok = true
 for T in (Float64, Float32), dims in ((12, 10, 8), (7, 5, 9))
     C = 6
-    r = random_rule(MersenneTwister(2), C, T; self=1.0, nb=1.0)
+    r = Rule{C,T}(vec(random_rule(MersenneTwister(2), C, T; self=1.0, nb=1.0))[1:2C*C+8C])  # one ring
     p = Physics{T}()
     a = World(CPU(), r, dims; T=T, h_scale=0.3, s0=0.4, seed=3)
     b = copy(a)

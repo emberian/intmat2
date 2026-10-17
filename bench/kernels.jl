@@ -18,7 +18,7 @@ for N in Ns
     reps = max(5, round(Int, 5e8 / N^3))
     for fast in (false, true), wg in (32, 64, 128, 256)
         t = bestof(() -> update_kernel!(be, wg)(wd.h2, wd.s2, wd.n2, wd.w2, wd.L, wd.h, wd.s, wd.n, wd.w,
-                       θ, Val(8), Val(fast), p, X, X, X, Int32(1); ndrange=cld(N^3, wg) * wg), reps)
+                       θ, Val(8), Val(fast), p, X, X, X, Int32(1), Int32(1); ndrange=cld(N^3, wg) * wg), reps)
         @printf("N=%d update fast=%-5s wg=%-4d %.3f ms\n", N, fast, wg, t)
     end
     for wg in (32, 64, 128, 256)
