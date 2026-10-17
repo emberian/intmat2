@@ -48,7 +48,10 @@ def card(item):
 def main():
     if OUT.exists():
         shutil.rmtree(OUT)
-    shutil.copytree(SITE, OUT, ignore=shutil.ignore_patterns('.DS_Store'))
+    if SITE.exists():
+        shutil.copytree(SITE, OUT, ignore=shutil.ignore_patterns('.DS_Store'))
+    else:
+        OUT.mkdir()
     shutil.copytree(WEB, OUT / 'viewer')
     items = json.loads((SITE / 'collection.json').read_text()) if (SITE / 'collection.json').exists() else []
     cards = '\n'.join(card(i) for i in items)

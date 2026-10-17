@@ -1,0 +1,16 @@
+width = 1600
+height = 1100
+backend = "metal"
+prefilter = true
+[optics]
+density = 8.0
+exposure = 3.0
+shoulder = 0.6
+pig_floor = 0.6
+stain = 0.6
+[camera]
+pos = [1.25, -0.45, 0.62]
+target = [0.5, 0.45, 0.04]
+fov = 40
+[clip]
+hi = [1, 1, 0.12]

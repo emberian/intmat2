@@ -1,0 +1,15 @@
+# camera inside the empty lower slab, looking up at the underside of the crust
+width = 1600
+height = 1600
+backend = "metal"
+prefilter = true
+[optics]
+density = 1.0
+stain = 0.6
+pig_floor = "q0.95"
+exposure = 2.0
+shoulder = 0.5
+[camera]
+pos = [0.5, 0.15, 0.25]
+target = [0.5, 0.6, 0.88]
+fov = 60

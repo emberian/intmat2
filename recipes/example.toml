@@ -1,4 +1,4 @@
-# Example recipe (lane C). Thin optics so light reaches through a 128-cell slab:
+# Example recipe (lane C). Translucent optics (the new Physics defaults) so light reaches through a 128-cell slab:
 # a fresh world has pig≈0.5 everywhere, so alpha_p·0.5·Nz is the bare optical depth.
 name = "example"
 C = 8
@@ -27,6 +27,6 @@ k_dep = 0.1
 k_ero = 0.01
 k_photo = 0.05
 D0 = 0.2
-alpha_s = 0.08
-alpha_p = 0.01
+alpha_s = 0.05
+alpha_p = 0.1
 L0 = 1.0

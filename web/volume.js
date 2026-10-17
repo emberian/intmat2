@@ -21,7 +21,7 @@
   const phys = index.physics;
   const frames = index.frames;
   const optics = Object.assign({ solid: [0.90, 0.89, 0.86], pigment: [0.95, 0.42, 0.16],
-    pigment_absorb: [0.35, 1.0, 1.4], pig_floor: 0.0 }, index.optics || {});
+    pigment_absorb: [0.35, 1.0, 1.4], pig_floor: 0.0, stain: 0.0 }, index.optics || {});
 
   // ---------------------------------------------------------------- textures
   const cache = new Map();
@@ -63,7 +63,7 @@
   in vec2 uv; out vec4 o;
   uniform sampler3D A, B, Lt;
   uniform vec3 eye, fwd, right, up, box, solidC, pigC, pigAbs;
-  uniform float tanh_, aspect, density, exposure, alphaS, alphaP, pigFloor, Lhi, Ahi;
+  uniform float tanh_, aspect, density, exposure, alphaS, alphaP, pigFloor, stain, Lhi, Ahi;
   uniform int mode; uniform int clipAxis; uniform float clipPos;
   vec3 ramp(float x){ // dark-to-bright diagnostic colour ramp
     return clamp(vec3(1.6*x-0.1, 1.4*x*x+0.1*x, 0.5*sqrt(x)+0.6*x*x*x), 0., 1.); }
@@ -88,7 +88,7 @@
       if (mode == 0) {
         float s = texture(A,q).r, pg = texture(B,q).r; Lv = texture(Lt,q).r*Lhi;
         float pe = max(pg-pigFloor,0.)/(1.-pigFloor);
-        float as_ = density*alphaS*s, ap = density*alphaP*pe;
+        float as_ = density*alphaS*s, ap = density*(alphaP+stain)*pe;
         sig = as_ + ap*pigAbs; beta = as_*solidC + ap*pigC;
       } else {
         float v = texture(A,q).r; Lv = 1.;
@@ -120,14 +120,14 @@
   const loc = gl.getAttribLocation(prog, 'p');
   gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
   const U = {}; for (const n of ['A','B','Lt','eye','fwd','right','up','box','solidC','pigC','pigAbs','tanh_','aspect',
-    'density','exposure','alphaS','alphaP','pigFloor','Lhi','Ahi','mode','clipAxis','clipPos'])
+    'density','exposure','alphaS','alphaP','pigFloor','stain','Lhi','Ahi','mode','clipAxis','clipPos'])
     U[n] = gl.getUniformLocation(prog, n);
   gl.uniform1i(U.A, 0); gl.uniform1i(U.B, 1); gl.uniform1i(U.Lt, 2);
 
   // box in full-resolution cells so absorption per unit length matches the simulation
   const box = [NX*ds, NY*ds, NZ*ds];
   const centre = box.map(b => b/2);
-  let yaw = -0.6, pitch = 0.42, dist = 2.3*Math.max(...box);
+  let yaw = -0.6, pitch = 0.42, dist = 3.4*Math.max(...box);
 
   // ---------------------------------------------------------------- state
   const modes = { lit: 0, s: 1, pig: 1, n: 1, w: 1, L: 1 };
@@ -151,7 +151,7 @@
     const s = frames[f].summary || {};
     $('tlabel').textContent = 'step ' + frames[f].step;
     $('stats').textContent = Object.entries(s).filter(([k]) => k !== 'step' && k !== 't')
-      .map(([k, v]) => k.padEnd(12) + (typeof v === 'number' ? v.toPrecision(4) : v)).join('\n') +
+      .map(([k, v]) => k.padEnd(14) + (typeof v === 'number' ? v.toPrecision(4) : v)).join('\n') +
       '\n\nvolume ' + NX + '×' + NY + '×' + NZ + (ds > 1 ? ' (÷' + ds + ')' : '') +
       '\nsource ' + index.source_dims.join('×');
     draw();
@@ -172,7 +172,7 @@
     gl.uniform1f(U.density, Math.pow(10, +$('density').value));
     gl.uniform1f(U.exposure, Math.pow(2, +$('exposure').value));
     gl.uniform1f(U.alphaS, phys.alpha_s); gl.uniform1f(U.alphaP, phys.alpha_p);
-    gl.uniform1f(U.pigFloor, optics.pig_floor); gl.uniform1f(U.Lhi, index.hi.L || phys.L0);
+    gl.uniform1f(U.pigFloor, optics.pig_floor); gl.uniform1f(U.stain, optics.stain); gl.uniform1f(U.Lhi, index.hi.L || phys.L0);
     gl.uniform1i(U.mode, modes[$('mode').value]);
     gl.uniform1i(U.clipAxis, +$('clipaxis').value); gl.uniform1f(U.clipPos, +$('clip').value);
     $('clabel').textContent = (+$('clip').value).toFixed(2);
@@ -199,5 +199,8 @@
   canvas.addEventListener('wheel', e => { e.preventDefault(); dist *= Math.exp(e.deltaY * 0.001); draw(); }, { passive: false });
   window.addEventListener('resize', draw);
   if (params.has('mode')) $('mode').value = params.get('mode');
+  if (params.has('clip')) { const [ax, pos] = params.get('clip').split(','); $('clipaxis').value = ax; $('clip').value = pos; }
+  if (optics.density !== undefined) $('density').value = Math.log10(optics.density);
+  if (optics.exposure !== undefined) $('exposure').value = Math.log2(optics.exposure);
   load();
 })();

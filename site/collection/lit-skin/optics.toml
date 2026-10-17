@@ -1,0 +1,15 @@
+# Cutaway: the front quarter removed so the cut face shows depth; top 30% of the slab.
+width = 1600
+height = 1066
+backend = "metal"
+[optics]
+density = 1.0
+exposure = 0.7
+[camera]
+pos = [1.25, -0.55, 1.25]
+target = [0.5, 0.45, 0.82]
+fov = 38
+[clip]
+lo = [0, 0, 0.7]
+normal = [-0.7071, 0.7071, 0]
+offset = 0.0

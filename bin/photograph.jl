@@ -2,9 +2,11 @@
 # Photograph a capture with its own light field:
 #   julia --project=env/metal bin/photograph.jl capturedir optics.toml out.png
 #   julia --project=env/metal bin/photograph.jl --series rundir optics.toml framesdir
+#   julia --project=env/metal bin/photograph.jl --many capturedir outdir a.toml b.toml ...
 #
 # optics.toml: top-level width, height, backend ("cpu"|"metal"), prefilter (bool);
-#   [optics]  any Optics field (alpha_s/alpha_p default to the capture's Physics)
+#   [optics]  any Optics field (alpha_s/alpha_p default to the capture's Physics);
+#             pig_floor may be "q0.9", a quantile of the capture's pigment
 #   [camera]  pos, target as FRACTIONS of (Nx,Ny,Nz); up; fov (deg); ortho; half_height (fraction of Nz)
 #   [clip]    lo, hi (fractions), normal, offset (fraction of the slab diagonal along normal)
 using Intmat2, TOML, KernelAbstractions, Printf
@@ -14,8 +16,20 @@ using Intmat2: load_capture, render, write_png, MiniJSON
 # world the run executes in; `using` inside a function leaves step! on stale methods.
 select_backend(name) = name == "cpu" ? CPU() : name == "metal" ? Main.Metal.MetalBackend() : error("unknown backend $name")
 
+# `pig_floor = "q0.9"` means the 0.9 quantile of this capture's pigment field.
+function resolve_quantiles(o, pig)
+    op = get(o, "optics", Dict())
+    v = get(op, "pig_floor", 0.0)
+    v isa AbstractString || return o
+    q = parse(Float64, lstrip(v, 'q'))
+    sorted = sort(vec(pig))
+    o2 = deepcopy(o); o2["optics"]["pig_floor"] = Float64(sorted[clamp(round(Int, q * length(sorted)), 1, length(sorted))])
+    o2
+end
+
 function shoot(be, capdir, o, out)
     cap = load_capture(capdir)
+    o = resolve_quantiles(o, cap.fields[:pig])
     st = Intmat2.photo_setup(o, cap.manifest["dims"], cap.physics)
     up(a) = Intmat2.adapt(be, a)
     f = cap.fields
@@ -27,7 +41,13 @@ function shoot(be, capdir, o, out)
 end
 
 function main(args)
-    if args[1] == "--series"
+    if args[1] == "--many"
+        capdir, outdir = args[2:3]; mkpath(outdir)
+        be = select_backend(get(TOML.parsefile(args[4]), "backend", "metal"))
+        for optf in args[4:end]
+            shoot(be, capdir, TOML.parsefile(optf), joinpath(outdir, splitext(basename(optf))[1] * ".png"))
+        end
+    elseif args[1] == "--series"
         rundir, optf, framedir = args[2:4]
         o = TOML.parsefile(optf); be = select_backend(get(o, "backend", "metal"))
         mkpath(framedir)
@@ -43,6 +63,6 @@ function main(args)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    get(TOML.parsefile(ARGS[end-1]), "backend", "metal") == "metal" && @eval using Metal
+    get(TOML.parsefile(ARGS[1] == "--many" ? ARGS[4] : ARGS[end-1]), "backend", "metal") == "metal" && @eval using Metal
     Base.invokelatest(main, ARGS)
 end

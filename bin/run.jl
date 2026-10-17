@@ -60,7 +60,7 @@ function main(recipe_path, outdir, overrides=Pair{String,Any}[])
     fields = Tuple(Symbol.(get(r, "fields", ["s", "n", "w", "L", "pig"])))
     every = get(r, "capture_every", 100); steps = r["steps"]
     rec = Recorder(outdir, rc.rule, rc.p; every, fields,
-                   meta=Dict{String,Any}("recipe" => get(r, "name", basename(recipe_path)), "backend" => get(r, "backend", "cpu")))
+                   meta=Dict{String,Any}("recipe" => get(r, "name", basename(recipe_path)), "backend" => r["backend"], "note" => get(r, "note", "")))
     m0 = total_mass(wd)
     t0 = time()
     report(wd) = (s = summarize(wd);

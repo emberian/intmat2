@@ -20,6 +20,8 @@ write_json(io, ::Nothing, d) = print(io, "null")
 write_json(io, x::Bool, d) = print(io, x ? "true" : "false")
 write_json(io, x::Integer, d) = print(io, x)
 write_json(io, x::AbstractFloat, d) = isfinite(x) ? print(io, repr(Float64(x))) : print(io, "null")
+# shortest decimal that round-trips the Float32, not its Float64 expansion
+write_json(io, x::Float32, d) = isfinite(x) ? print(io, repr(parse(Float64, string(x)))) : print(io, "null")
 write_json(io, x::Union{AbstractString,Symbol}, d) = escape(io, string(x))
 function escape(io, s)
     print(io, '"')
@@ -176,7 +178,7 @@ end
 
 quantize(a, hi) = UInt8[round(UInt8, clamp(x / hi, 0f0, 1f0) * 255) for x in a]
 
-physics_dict(p::Physics) = Dict(string(f) => Float64(getfield(p, f)) for f in fieldnames(Physics))
+physics_dict(p::Physics) = Dict(string(f) => getfield(p, f) for f in fieldnames(Physics))
 
 # ---------------------------------------------------------------- capture
 
@@ -290,12 +292,13 @@ end
 
 Stage a Recorder run for `web/viewer.html`: a box `lo .+ (0:extent-1)` (default the
 whole slab), box-averaged by `ds`, quantized to UInt8. Every chosen frame carries
-`series_fields`; the last carries all `fields`. Writes `outdir/index.json` and
+`series_fields`; the last carries all `fields`. `optics` (a Dict of Optics field names:
+pig_floor, solid, pigment, pigment_absorb, density, exposure) sets the viewer defaults. Writes `outdir/index.json` and
 `outdir/fNNN_<field>.u8`. Each field's `hi` is its maximum over the staged frames
 (`s`, `pig` use 1, `L` uses `L0`).
 """
 function viewer_volume(rundir, outdir; ds=1, lo=(1, 1, 1), extent=nothing, max_frames=16,
-                       fields=(:s, :pig, :L, :n, :w), series_fields=(:s, :pig, :L))
+                       fields=(:s, :pig, :L, :n, :w), series_fields=(:s, :pig, :L), optics=Dict{String,Any}())
     series = parsejson(read(joinpath(rundir, "series.json"), String))
     frames = series["frames"]
     idx = unique(round.(Int, range(1, length(frames), length=min(max_frames, length(frames)))))
@@ -331,6 +334,6 @@ function viewer_volume(rundir, outdir; ds=1, lo=(1, 1, 1), extent=nothing, max_f
     write(joinpath(outdir, "index.json"), json(Dict{String,Any}(
         "format" => "intmat2-viewer-1", "dims" => vdims, "ds" => ds, "source_dims" => dims,
         "lo" => collect(lo), "extent" => collect(ext), "hi" => Dict(string(k) => v for (k, v) in hi),
-        "physics" => series["physics"], "commit" => series["commit"], "frames" => out)))
+        "physics" => series["physics"], "commit" => series["commit"], "optics" => optics, "frames" => out)))
     outdir
 end

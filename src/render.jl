@@ -2,8 +2,8 @@
 #
 # The slab is a finite block [0,Nx]×[0,Ny]×[0,Nz] in voxel units (z up, k=Nz is the lit
 # top, voxel centres at i-½). Along each camera ray, per unit length:
-#   extinction  σ_c(x) = density·(α_s·s + α_p·p̃·pig_absorb_c)
-#   scattering  β_c(x) = density·(α_s·s·solid_c + α_p·p̃·pigment_c)
+#   extinction  σ_c(x) = density·(α_s·s + (α_p + stain)·p̃·pig_absorb_c)
+#   scattering  β_c(x) = density·(α_s·s·solid_c + (α_p + stain)·p̃·pigment_c)
 #   in-scatter  β_c(x)·(L(x) + ambient)      L trilinear from the simulation
 # with p̃ = max(pig − pig_floor, 0)/(1 − pig_floor). Radiance is integrated front to
 # back with exact per-segment attenuation, then exposure, a shoulder v/(1+shoulder·v),
@@ -14,12 +14,15 @@
 export Optics, Camera, Clip, camera, render, render_world, write_png
 
 """
-    Optics(; alpha_s, alpha_p, density, solid, pigment, pigment_absorb, pig_floor,
+    Optics(; alpha_s, alpha_p, density, solid, pigment, pigment_absorb, pig_floor, stain,
              background, ambient, exposure, shoulder, step, gamma)
 
 Optical parameters of a photograph. `alpha_s`/`alpha_p` should be the run's Physics
 values (`Optics(p::Physics; kw...)` copies them); `density` scales the camera-path
-extinction only (1 = the light the material itself sees). Colours are RGB albedos.
+extinction only (1 = the light the material itself sees). `stain` adds camera-only
+extinction per unit pigment (like a histological stain: it changes what the camera
+picks out, never the illumination, which is always the simulation's L). Colours are
+RGB albedos.
 """
 struct Optics
     alpha_s::Float32
@@ -29,6 +32,7 @@ struct Optics
     pigment::SVector{3,Float32}
     pigment_absorb::SVector{3,Float32}
     pig_floor::Float32
+    stain::Float32
     background::SVector{3,Float32}
     ambient::Float32
     exposure::Float32
@@ -37,10 +41,10 @@ struct Optics
     gamma::Float32
 end
 function Optics(; alpha_s=2.0, alpha_p=2.0, density=1.0, solid=(0.90, 0.89, 0.86),
-                pigment=(0.95, 0.42, 0.16), pigment_absorb=(0.35, 1.0, 1.4), pig_floor=0.0,
+                pigment=(0.95, 0.42, 0.16), pigment_absorb=(0.35, 1.0, 1.4), pig_floor=0.0, stain=0.0,
                 background=(0.012, 0.012, 0.014), ambient=0.0, exposure=1.0, shoulder=0.25, step=0.5, gamma=2.2)
     v3(x) = SVector{3,Float32}(x...)
-    Optics(alpha_s, alpha_p, density, v3(solid), v3(pigment), v3(pigment_absorb), pig_floor,
+    Optics(alpha_s, alpha_p, density, v3(solid), v3(pigment), v3(pigment_absorb), pig_floor, stain,
            v3(background), ambient, exposure, shoulder, step, gamma)
 end
 Optics(p::Physics; kw...) = Optics(; alpha_s=Float64(p.alpha_s), alpha_p=Float64(p.alpha_p), kw...)
@@ -147,7 +151,7 @@ end
                     Lv = trilerp(L, x[1], x[2], x[3], Nx, Ny, Nz)
                     pe = max(pv - pf, zero(T)) / (one(T) - pf)
                     as = opt.density * opt.alpha_s * sv
-                    ap = opt.density * opt.alpha_p * pe
+                    ap = opt.density * (opt.alpha_p + opt.stain) * pe
                     σ = as .+ ap .* opt.pigment_absorb
                     β = as .* opt.solid .+ ap .* opt.pigment
                     att = exp.(-σ .* ds)
