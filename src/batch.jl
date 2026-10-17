@@ -107,15 +107,17 @@ cached_device_rules(be, rules::AbstractVector{<:Rule}) =
     cached_upload(() -> device_rules(be, rules), be, Tuple(rules))
 
 # A rule bank for B worlds: θ with B columns, or one column shared by all (B_θ = 1).
-bank(be, wb::WorldBatch{C,T}, r::Rule{C,T}) where {C,T} = (device_theta(be, r), Int32(1))
+# Returns (θ, Bθ, shell2): shell2 is false only when every rule is known to have Wnb2 = 0
+# (a pre-uploaded matrix is assumed to use the shell).
+bank(be, wb::WorldBatch{C,T}, r::Rule{C,T}) where {C,T} = (device_theta(be, r), Int32(1), has_shell(r))
 function bank(be, wb::WorldBatch{C,T}, rules::AbstractVector{<:Rule{C,T}}) where {C,T}
     length(rules) == nworlds(wb) || throw(ArgumentError("need $(nworlds(wb)) rules, got $(length(rules))"))
-    (cached_device_rules(be, rules), Int32(nworlds(wb)))
+    (cached_device_rules(be, rules), Int32(nworlds(wb)), any(has_shell, rules))
 end
 function bank(be, wb::WorldBatch{C,T}, θ::AbstractMatrix{T}) where {C,T}
     size(θ, 1) == 3C * C + 8C || throw(ArgumentError("θ must have $(3C*C+8C) rows (vec(rule))"))
     size(θ, 2) in (1, nworlds(wb)) || throw(ArgumentError("θ must have 1 or $(nworlds(wb)) columns"))
-    (θ, Int32(size(θ, 2)))
+    (θ, Int32(size(θ, 2)), true)
 end
 
 # ---- stepping ------------------------------------------------------------------------
@@ -126,9 +128,9 @@ function step!(wb::WorldBatch{C,T}, rules, p::Physics{T};
     Nx, Ny, Nz = size(wb); B = nworlds(wb)
     check_int32(C, (Nx, Ny, Nz), B)
     X, Y, Z = Int32(Nx), Int32(Ny), Int32(Nz)
-    θ, Bθ = bank(be, wb, rules)
+    θ, Bθ, shell2 = bank(be, wb, rules)
     launch_update!(be, wb.h2, wb.s2, wb.n2, wb.w2, wb.L, wb.h, wb.s, wb.n, wb.w, θ, Val(C),
-                   Val(fast), p, X, Y, Z, Int32(B), Bθ)
+                   Val(fast), p, X, Y, Z, Int32(B), Bθ, shell2)
     light_kernel!(be, light_workgroup(be))(vec(wb.L), p, X, Y, Z; ndrange=Nx * Ny * B)
     sync && KA.synchronize(be)
     WorldBatch{C,T,typeof(wb.h),typeof(wb.s)}(wb.h2, wb.s2, wb.n2, wb.w2, wb.L,
@@ -147,7 +149,7 @@ function light!(wb::WorldBatch{C,T}, rules, p::Physics{T}) where {C,T}
     be = backend(wb)
     Nx, Ny, Nz = size(wb); B = nworlds(wb)
     check_int32(C, (Nx, Ny, Nz), B)
-    θ, Bθ = bank(be, wb, rules)
+    θ, Bθ, _ = bank(be, wb, rules)
     launch_light!(be, wb.L, wb.s, wb.h, θ, Val(C), p, Int32(Nx), Int32(Ny), Int32(Nz), Int32(B), Bθ)
     KA.synchronize(be)
     wb

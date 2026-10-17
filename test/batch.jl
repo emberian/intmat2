@@ -4,7 +4,8 @@ using Intmat2: run!, light!, world, nworlds, device_rules
 @testset "batch: bitwise equal to separate worlds (CPU)" begin
     for T in (Float64, Float32), dims in ((7, 5, 9), (6, 4, 4))   # 315 voxels: groups straddle worlds
         C = 4; B = 3
-        rules = [random_rule(MersenneTwister(10 + b), C, T; self=1.0, nb=1.0) for b in 1:B]
+        # world 2 uses the second shell, worlds 1 and 3 do not (alone they skip it)
+        rules = [random_rule(MersenneTwister(10 + b), C, T; self=1.0, nb=1.0, nb2=(b == 2 ? 0.5 : 0.0)) for b in 1:B]
         p = Physics{T}()
         seeds = [3, 8, 21]
         wb = WorldBatch(CPU(), C, dims, B; T=T, seeds=seeds, h_scale=0.3, s0=0.4)

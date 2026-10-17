@@ -130,7 +130,7 @@ end
 
 # The whole per-voxel step for voxel offset q with in-world coordinates (i, j, k).
 # θ[θo + 1 : θo + 3C²+8C] is the rule.
-@inline function update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, θo::Int32, ::Val{C}, fm::Val, p::Physics{T},
+@inline function update_voxel!(h2, s2, n2, w2, L, h, s, n, w, θ, θo::Int32, ::Val{C}, fm::Val, shell2::Bool, p::Physics{T},
                                Nx::Int32, Ny::Int32, Nz::Int32, q::Int32,
                                i::Int32, j::Int32, k::Int32) where {C,T}
     o = Int32(1)
@@ -157,23 +157,28 @@ end
             dm, dn, dw = face(h, s, n, w, p, Val(C), hx, sx, nx, wx, q - NxNy)
             m += dm; fn += dn; fw += dw
         end
-        # second shell: the axis voxels at distance 2 (x, y periodic for any N ≥ 1)
-        two = Int32(2)
-        m2 = shell(h, s, p, Val(C), hx, sx, q + (wrap(i + two, Nx) - i))
-        m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(i - two, Nx) - i))
-        m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(j + two, Ny) - j) * Nx)
-        m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(j - two, Ny) - j) * Nx)
-        if k + two < Nz
-            m2 += shell(h, s, p, Val(C), hx, sx, q + two * NxNy)
-        end
-        if k >= two
-            m2 += shell(h, s, p, Val(C), hx, sx, q - two * NxNy)
+        # second shell (skipped, uniformly, when every rule in the launch has Wnb2 = 0)
+        m2 = zero(SVector{C,T})
+        if shell2   # the six axis voxels at distance 2 (x, y periodic for any N ≥ 1)
+            two = Int32(2)
+            m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(i + two, Nx) - i))
+            m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(i - two, Nx) - i))
+            m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(j + two, Ny) - j) * Nx)
+            m2 += shell(h, s, p, Val(C), hx, sx, q + (wrap(j - two, Ny) - j) * Nx)
+            if k + two < Nz
+                m2 += shell(h, s, p, Val(C), hx, sx, q + two * NxNy)
+            end
+            if k >= two
+                m2 += shell(h, s, p, Val(C), hx, sx, q - two * NxNy)
+            end
         end
         # activity
         inp = SVector{4,T}(nx, sx, wx, Lx)
         u = θmatvec(θ, θo, Val(C), hx) + θmatvec(θ, θo + CC, Val(C), m) +
             θmatvec(θ, θo + Int32(2) * CC, Val(C), inp) + θvec(θ, θo + Int32(2) * CC + Int32(4C), Val(C), T)
-        u += θmatvec(θ, θo + Int32(2) * CC + Int32(8C), Val(C), m2)   # Wnb2 (added last: Wnb2 = 0 is exact)
+        if shell2
+            u += θmatvec(θ, θo + Int32(2) * CC + Int32(8C), Val(C), m2)   # Wnb2, added last
+        end
         hn = hx + (p.dt / p.tau_h) .* (act_tanh.(fm, u) - hx)
         # transport
         nt = nx + p.dt * fn
@@ -219,7 +224,7 @@ end
 # barrier; padded lanes do no work.
 @kernel unsafe_indices=true function update_kernel!(h2, s2, n2, w2, L, @Const(h), @Const(s), @Const(n),
         @Const(w), @Const(θ), ::Val{C}, fm::Val, p::Physics{T}, Nx::Int32, Ny::Int32, Nz::Int32,
-        B::Int32, Bθ::Int32) where {C,T}
+        B::Int32, Bθ::Int32, shell2::Bool) where {C,T}
     lθ = @localmem T (2 * (3C * C + 8C),)
     # (values are recomputed after the barrier: KA's CPU backend splits the body there)
     P = Int32(3C * C + 8C)
@@ -243,7 +248,7 @@ end
     b0 = min((q - li) ÷ (Nx * Ny * Nz), B - Int32(1))
     if q < Nx * Ny * Nz * B
         b, i, j, k = voxel_coords(q, Nx, Ny, Nz)
-        update_voxel!(h2, s2, n2, w2, L, h, s, n, w, lθ, (b - b0) * P, Val(C), fm, p,
+        update_voxel!(h2, s2, n2, w2, L, h, s, n, w, lθ, (b - b0) * P, Val(C), fm, shell2, p,
                       Nx, Ny, Nz, q, i, j, k)
     end
 end
@@ -296,14 +301,18 @@ device_theta(be, rule::Rule{C,T}) where {C,T} = cached_upload(be, rule) do
 end
 
 function launch_update!(be, h2, s2, n2, w2, L, h, s, n, w, θ, ::Val{C}, fm::Val, p,
-                        X::Int32, Y::Int32, Z::Int32, B::Int32, Bθ::Int32=Int32(1)) where {C}
+                        X::Int32, Y::Int32, Z::Int32, B::Int32, Bθ::Int32=Int32(1),
+                        shell2::Bool=true) where {C}
     wg = update_workgroup(be)
     total = Int(X) * Int(Y) * Int(Z) * Int(B)
     # Flat vectors: World and WorldBatch then share one kernel specialization.
     v = vec
     update_kernel!(be, wg)(v(h2), v(s2), v(n2), v(w2), v(L), v(h), v(s), v(n), v(w), v(θ), Val(C), fm, p,
-                           X, Y, Z, B, Bθ; ndrange=cld(total, wg) * wg)
+                           X, Y, Z, B, Bθ, shell2; ndrange=cld(total, wg) * wg)
 end
+
+"""Whether a rule uses the second shell (any nonzero Wnb2)."""
+has_shell(r::Rule) = any(!iszero, r.Wnb2)
 
 function check_int32(C, dims, B=1)
     C * prod(dims) * B < typemax(Int32) ||
@@ -328,7 +337,7 @@ function step!(wd::World{C,T}, rule::Rule{C,T}, p::Physics{T};
     X, Y, Z = Int32(Nx), Int32(Ny), Int32(Nz)
     θ = device_theta(be, rule)
     launch_update!(be, wd.h2, wd.s2, wd.n2, wd.w2, wd.L, wd.h, wd.s, wd.n, wd.w, θ, Val(C),
-                   Val(fast), p, X, Y, Z, Int32(1))
+                   Val(fast), p, X, Y, Z, Int32(1), Int32(1), has_shell(rule))
     light_kernel!(be, light_workgroup(be))(vec(wd.L), p, X, Y, Z; ndrange=Nx * Ny)
     sync && KA.synchronize(be)
     World{C,T,typeof(wd.h),typeof(wd.s)}(wd.h2, wd.s2, wd.n2, wd.w2, wd.L,

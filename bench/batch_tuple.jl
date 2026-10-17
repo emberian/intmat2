@@ -31,7 +31,7 @@ using Intmat2.StaticArrays
     b0 = min((q - li) ÷ (Nx * Ny * Nz), B - Int32(1))
     if q < Nx * Ny * Nz * B
         b, i, j, k = voxel_coords(q, Nx, Ny, Nz)
-        update_voxel!(h2, s2, n2, w2, L, h, s, n, w, lθ, (b - b0) * P, Val(C), fm, p, Nx, Ny, Nz, q, i, j, k)
+        update_voxel!(h2, s2, n2, w2, L, h, s, n, w, lθ, (b - b0) * P, Val(C), fm, true, p, Nx, Ny, Nz, q, i, j, k)
     end
 end
 function tstep!(wb, θs, p)

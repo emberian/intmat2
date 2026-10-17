@@ -1,4 +1,5 @@
-# Complete steps/s, before (09d1bd7 four-kernel step, bench/step_09d1bd7.jl) and after,
+# Complete steps/s, before (09d1bd7 four-kernel step, bench/step_09d1bd7.jl) and after
+# (one-ring gate rule; the last row a tied two-shell rule, which also loads the shell),
 # interleaved in one process so that contention from other GPU users hits both alike.
 # usage: julia --project=env/metal bench/steps.jl [metal|rocm] [out.json] [N...]
 be_name = get(ARGS, 1, "metal")
@@ -21,12 +22,14 @@ end
 results = Dict{String,Any}()
 for N in Ns
     r = gate_rule(); p = gate_physics()
+    r2 = tied_rule(MersenneTwister(1), 8, Float32; nb1=2, beta=0.4)   # same cost at any dt
     variants = [
         "before (4 kernels, sync/step)" => w -> Old.step!(w, r, p),
         "after precise, sync/step" => w -> step!(w, r, p; fast=false),
         "after fast, sync/step" => w -> step!(w, r, p; fast=true),
         "after precise, run!" => w -> step!(w, r, p; fast=false, sync=false),
         "after fast, run!" => w -> step!(w, r, p; fast=true, sync=false),
+        "after fast, run!, two-shell rule" => w -> step!(w, r2, p; fast=true, sync=false),
     ]
     ws = Dict(k => run!(light!(gate_world(be, N), r, p), r, p, 3) for (k, _) in variants)
     best = Dict(k => 0.0 for (k, _) in variants)
